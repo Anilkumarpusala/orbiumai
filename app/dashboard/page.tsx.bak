@@ -1,0 +1,544 @@
+"use client";
+import { useEffect, useState } from "react";
+import { createClient } from "@/lib/supabase";
+import { useRouter } from "next/navigation";
+
+const DEFAULT_EMPLOYEES = [
+  {
+    name: "Nova", role: "Developer Agent", avatar: "N", color: "#6366F1", bg: "#6366F115",
+    system_prompt: `You are Nova, a senior full-stack developer with 8 years of experience. You write clean, production-ready code. You always explain what you built, show the file structure, and provide working code. You specialize in React, Next.js, TypeScript, and Node.js. Format your response as:
+
+## Task Summary
+What you understood and did.
+
+## Steps Taken
+Step by step breakdown.
+
+## Deliverables
+\`\`\`
+// Code here with filename comments
+\`\`\`
+
+## Next Actions
+Suggested follow-up tasks.`
+  },
+  {
+    name: "Scout", role: "Research Agent", avatar: "S", color: "#06B6D4", bg: "#06B6D415",
+    system_prompt: `You are Scout, a senior research analyst. You find deep, accurate, actionable information. You always cite your reasoning, structure findings clearly, and highlight what matters most to the user's business. Format your response as:
+
+## Task Summary
+What you researched and why.
+
+## Key Findings
+Detailed findings with context.
+
+## Deliverables
+Structured data, tables, or reports.
+
+## Next Actions
+What to do with this information.`
+  },
+  {
+    name: "Aria", role: "Marketing Agent", avatar: "A", color: "#EC4899", bg: "#EC489915",
+    system_prompt: `You are Aria, a senior marketing strategist with expertise in copywriting, campaigns, and growth. You write in the user's brand voice, understand their audience, and create content that converts. Format your response as:
+
+## Task Summary
+What you created and the strategy behind it.
+
+## Steps Taken
+Your creative process.
+
+## Deliverables
+The actual marketing content, copy, or campaign.
+
+## Next Actions
+How to deploy and measure this.`
+  },
+  {
+    name: "Rex", role: "Sales Agent", avatar: "R", color: "#F59E0B", bg: "#F59E0B15",
+    system_prompt: `You are Rex, a senior sales strategist who specializes in outreach, lead generation, and closing. You research prospects, personalize every message, and know exactly when to push and when to pull back. Format your response as:
+
+## Task Summary
+What sales work you completed.
+
+## Steps Taken
+Your research and strategy.
+
+## Deliverables
+Lead lists, outreach messages, or sales assets.
+
+## Next Actions
+Follow-up sequence and next steps.`
+  },
+];
+
+export default function Dashboard() {
+  const [user, setUser] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [workspace, setWorkspace] = useState<any>(null);
+  const [apiKeys, setApiKeys] = useState<any>({});
+  const [selectedEmployee, setSelectedEmployee] = useState(DEFAULT_EMPLOYEES[0]);
+  const [taskPrompt, setTaskPrompt] = useState("");
+  const [taskTitle, setTaskTitle] = useState("");
+  const [running, setRunning] = useState(false);
+  const [output, setOutput] = useState("");
+  const [error, setError] = useState("");
+  const [tasks, setTasks] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState("dashboard");
+  const [showKeyModal, setShowKeyModal] = useState(false);
+  const [keyInput, setKeyInput] = useState("");
+  const [keyProvider, setKeyProvider] = useState("openai");
+  const router = useRouter();
+  const supabase = createClient();
+
+  useEffect(() => {
+    supabase.auth.getUser().then(async ({ data }) => {
+      if (!data.user) { router.push("/login"); return; }
+      setUser(data.user);
+
+      let { data: ws } = await supabase
+        .from("workspaces")
+        .select("*")
+        .eq("user_id", data.user.id)
+        .single();
+
+      if (!ws) {
+        const name = data.user.user_metadata?.full_name || data.user.email?.split("@")[0] || "My Workspace";
+        const { data: newWs } = await supabase
+          .from("workspaces")
+          .insert({ user_id: data.user.id, name: `${name}'s Workspace` })
+          .select()
+          .single();
+        ws = newWs;
+      }
+      setWorkspace(ws);
+
+      const { data: keys } = await supabase
+        .from("api_keys")
+        .select("*")
+        .eq("user_id", data.user.id);
+      const keyMap: any = {};
+      keys?.forEach((k: any) => { keyMap[k.provider] = k.encrypted_key; });
+      setApiKeys(keyMap);
+
+      const { data: taskData } = await supabase
+        .from("tasks")
+        .select("*")
+        .eq("workspace_id", ws?.id)
+        .order("created_at", { ascending: false })
+        .limit(20);
+      setTasks(taskData || []);
+
+      setLoading(false);
+    });
+  }, []);
+
+  const runTask = async () => {
+    if (!taskPrompt.trim()) return;
+    const provider = Object.keys(apiKeys)[0];
+    const apiKey = apiKeys[provider];
+    if (!apiKey) { setShowKeyModal(true); return; }
+
+    setRunning(true);
+    setOutput("");
+    setError("");
+
+    const { data: task } = await supabase.from("tasks").insert({
+      workspace_id: workspace.id,
+      employee_id: null,
+      title: taskTitle || taskPrompt.slice(0, 50),
+      prompt: taskPrompt,
+      status: "running",
+    }).select().single();
+
+    try {
+      const res = await fetch("/api/run-task", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: `${workspace.company_memory ? `Company context: ${workspace.company_memory}\n\n` : ""}${taskPrompt}`,
+          systemPrompt: selectedEmployee.system_prompt,
+          model: provider === "openai" ? "gpt-4o" : provider === "anthropic" ? "claude-3-5-sonnet-20241022" : "gemini-1.5-flash",
+          apiKey,
+          provider,
+        }),
+      });
+
+      const result = await res.json();
+      if (result.error) {
+        setError(result.error);
+        if (task) await supabase.from("tasks").update({ status: "failed" }).eq("id", task.id);
+      } else {
+        setOutput(result.output);
+        if (task) await supabase.from("tasks").update({ output: result.output, status: "completed" }).eq("id", task.id);
+        setTasks(prev => [{ ...task, output: result.output, status: "completed" }, ...prev]);
+      }
+    } catch (e) {
+      setError("Something went wrong. Please try again.");
+    }
+
+    setRunning(false);
+  };
+
+  const saveApiKey = async () => {
+    if (!keyInput.trim()) return;
+    await supabase.from("api_keys").upsert({
+      user_id: user.id,
+      provider: keyProvider,
+      encrypted_key: keyInput,
+    }, { onConflict: "user_id,provider" });
+    setApiKeys((prev: any) => ({ ...prev, [keyProvider]: keyInput }));
+    setKeyInput("");
+    setShowKeyModal(false);
+  };
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    router.push("/");
+  };
+
+  if (loading) return (
+    <div style={{ background: "#000", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter', system-ui, sans-serif" }}>
+      <div style={{ color: "#333", fontSize: 13 }}>Loading workspace...</div>
+    </div>
+  );
+
+  const name = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Founder";
+  const hasApiKey = Object.keys(apiKeys).length > 0;
+
+  return (
+    <div style={{ background: "#000", minHeight: "100vh", fontFamily: "'Inter', system-ui, sans-serif", color: "#fff", display: "flex" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        textarea { outline: none; resize: none; }
+        textarea:focus { border-color: #6366F1 !important; }
+        input { outline: none; }
+        input:focus { border-color: #6366F1 !important; }
+        .nav-item { transition: background 0.15s; cursor: pointer; }
+        .nav-item:hover { background: #111 !important; }
+        .emp-card { transition: border-color 0.15s, transform 0.2s; cursor: pointer; }
+        .emp-card:hover { transform: translateY(-2px); }
+        ::-webkit-scrollbar { width: 3px; }
+        ::-webkit-scrollbar-thumb { background: #1A1A1A; border-radius: 2px; }
+      `}</style>
+
+      {/* API KEY MODAL */}
+      {showKeyModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+          <div style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 20, padding: 32, width: "100%", maxWidth: 420 }}>
+            <h2 style={{ fontSize: 20, fontWeight: 800, letterSpacing: "-0.03em", marginBottom: 8 }}>Connect API Key</h2>
+            <p style={{ color: "#555", fontSize: 14, marginBottom: 24 }}>Add your API key to start running tasks</p>
+            <div style={{ marginBottom: 16 }}>
+              <label style={{ color: "#666", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", display: "block", marginBottom: 8 }}>PROVIDER</label>
+              <div style={{ display: "flex", gap: 8 }}>
+                {["openai", "anthropic", "gemini"].map(p => (
+                  <button key={p} onClick={() => setKeyProvider(p)} style={{ flex: 1, padding: "8px", background: keyProvider === p ? "#fff" : "#111", border: `1px solid ${keyProvider === p ? "#fff" : "#222"}`, borderRadius: 8, color: keyProvider === p ? "#000" : "#555", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textTransform: "capitalize" as const }}>
+                    {p}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div style={{ marginBottom: 24 }}>
+              <label style={{ color: "#666", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", display: "block", marginBottom: 8 }}>API KEY</label>
+              <input
+                type="password"
+                value={keyInput}
+                onChange={e => setKeyInput(e.target.value)}
+                placeholder="sk-..."
+                style={{ width: "100%", background: "#111", border: "1px solid #222", borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 14, fontFamily: "inherit" }}
+              />
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button onClick={() => setShowKeyModal(false)} style={{ flex: 1, padding: "12px", background: "transparent", border: "1px solid #222", borderRadius: 10, color: "#555", fontSize: 14, cursor: "pointer", fontFamily: "inherit" }}>Cancel</button>
+              <button onClick={saveApiKey} style={{ flex: 1, padding: "12px", background: "#fff", border: "none", borderRadius: 10, color: "#000", fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>Save Key →</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SIDEBAR */}
+      <div style={{ width: 220, background: "#0A0A0A", borderRight: "1px solid #111", display: "flex", flexDirection: "column", flexShrink: 0, minHeight: "100vh", position: "fixed", top: 0, left: 0, bottom: 0 }}>
+        <div style={{ padding: "16px 16px 14px", borderBottom: "1px solid #111" }}>
+          <a href="/" style={{ display: "flex", alignItems: "center", gap: 8, textDecoration: "none" }}>
+            <div style={{ width: 26, height: 26, borderRadius: 7, background: "linear-gradient(135deg,#6366F1,#06B6D4)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 12, color: "#fff" }}>O</div>
+            <span style={{ fontWeight: 800, fontSize: 14, letterSpacing: "-0.03em", color: "#fff" }}>Orbium</span>
+          </a>
+        </div>
+
+        <div style={{ padding: "12px 10px 8px" }}>
+          <p style={{ color: "#333", fontSize: 10, fontWeight: 700, letterSpacing: "0.1em", padding: "0 6px", marginBottom: 6 }}>WORKSPACE</p>
+          <div style={{ background: "#111", border: "1px solid #1A1A1A", borderRadius: 8, padding: "8px 10px", display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ width: 18, height: 18, borderRadius: 5, background: "linear-gradient(135deg,#6366F1,#EC4899)", flexShrink: 0 }} />
+            <span style={{ color: "#ccc", fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{workspace?.name}</span>
+          </div>
+        </div>
+
+        <nav style={{ flex: 1, padding: "8px 10px", display: "flex", flexDirection: "column", gap: 2 }}>
+          {[
+            { id: "dashboard", icon: "⊞", label: "Dashboard" },
+            { id: "tasks", icon: "✦", label: "Tasks" },
+            { id: "employees", icon: "👥", label: "Employees" },
+            { id: "activity", icon: "◎", label: "Activity" },
+            { id: "apikeys", icon: "⚿", label: "API Keys" },
+          ].map(item => (
+            <div
+              key={item.id}
+              onClick={() => setActiveTab(item.id)}
+              className="nav-item"
+              style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 10px", borderRadius: 8, background: activeTab === item.id ? "#ffffff08" : "transparent" }}
+            >
+              <span style={{ fontSize: 13, opacity: activeTab === item.id ? 1 : 0.35 }}>{item.icon}</span>
+              <span style={{ color: activeTab === item.id ? "#fff" : "#555", fontSize: 13, fontWeight: activeTab === item.id ? 600 : 400 }}>{item.label}</span>
+            </div>
+          ))}
+        </nav>
+
+        <div style={{ padding: "12px 16px", borderTop: "1px solid #111" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <div style={{ width: 28, height: 28, borderRadius: 8, background: "#6366F120", border: "1px solid #6366F130", display: "flex", alignItems: "center", justifyContent: "center", color: "#6366F1", fontWeight: 800, fontSize: 11, flexShrink: 0 }}>
+              {name[0]?.toUpperCase()}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <p style={{ color: "#ccc", fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{name}</p>
+              <p style={{ color: "#333", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.email}</p>
+            </div>
+          </div>
+          <button onClick={handleLogout} style={{ width: "100%", padding: "7px", background: "transparent", border: "1px solid #1A1A1A", borderRadius: 7, color: "#333", fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}>
+            Sign out
+          </button>
+        </div>
+      </div>
+
+      {/* MAIN */}
+      <div style={{ marginLeft: 220, flex: 1, display: "flex", flexDirection: "column", minHeight: "100vh" }}>
+
+        {/* Top bar */}
+        <div style={{ borderBottom: "1px solid #111", padding: "14px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, background: "rgba(0,0,0,0.9)", backdropFilter: "blur(20px)", zIndex: 10 }}>
+          <div>
+            <h1 style={{ fontSize: 18, fontWeight: 800, letterSpacing: "-0.03em" }}>
+              {activeTab === "dashboard" && `Good morning, ${name.split(" ")[0]} 👋`}
+              {activeTab === "tasks" && "Tasks"}
+              {activeTab === "employees" && "Your Employees"}
+              {activeTab === "activity" && "Activity"}
+              {activeTab === "apikeys" && "API Keys"}
+            </h1>
+            <p style={{ color: "#444", fontSize: 12, marginTop: 2 }}>
+              {activeTab === "dashboard" && "Your AI team is ready for work"}
+              {activeTab === "tasks" && `${tasks.length} tasks total`}
+              {activeTab === "employees" && "4 employees active"}
+              {activeTab === "apikeys" && `${Object.keys(apiKeys).length} key connected`}
+            </p>
+          </div>
+          {!hasApiKey && (
+            <button onClick={() => setShowKeyModal(true)} style={{ background: "#6366F1", border: "none", borderRadius: 8, padding: "9px 18px", color: "#fff", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+              + Connect API Key
+            </button>
+          )}
+        </div>
+
+        <div style={{ padding: "28px", flex: 1 }}>
+
+          {/* DASHBOARD TAB */}
+          {activeTab === "dashboard" && (
+            <div>
+              {/* Stats */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12, marginBottom: 28 }}>
+                {[
+                  { label: "Tasks Done", value: tasks.filter(t => t.status === "completed").length.toString() },
+                  { label: "Employees", value: "4" },
+                  { label: "API Keys", value: Object.keys(apiKeys).length.toString() },
+                  { label: "Deliverables", value: tasks.filter(t => t.output).length.toString() },
+                ].map((s, i) => (
+                  <div key={i} style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 14, padding: "18px 20px" }}>
+                    <p style={{ color: "#333", fontSize: 10, fontWeight: 700, letterSpacing: "0.08em", marginBottom: 8 }}>{s.label.toUpperCase()}</p>
+                    <p style={{ fontSize: 32, fontWeight: 900, letterSpacing: "-0.04em" }}>{s.value}</p>
+                  </div>
+                ))}
+              </div>
+
+              {/* No API key warning */}
+              {!hasApiKey && (
+                <div style={{ background: "#0A0A0A", border: "1px solid #F59E0B30", borderRadius: 14, padding: "20px 24px", marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <p style={{ color: "#F59E0B", fontSize: 13, fontWeight: 700, marginBottom: 4 }}>No API key connected</p>
+                    <p style={{ color: "#555", fontSize: 13 }}>Connect your OpenAI, Anthropic or Gemini key to start running tasks</p>
+                  </div>
+                  <button onClick={() => setShowKeyModal(true)} style={{ background: "#F59E0B", border: "none", borderRadius: 8, padding: "9px 18px", color: "#000", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", flexShrink: 0, marginLeft: 16 }}>
+                    Connect Key →
+                  </button>
+                </div>
+              )}
+
+              {/* Task Runner */}
+              <div style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 16, padding: 24, marginBottom: 24 }}>
+                <p style={{ color: "#444", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 16 }}>ASSIGN TASK</p>
+
+                {/* Employee selector */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 18 }}>
+                  {DEFAULT_EMPLOYEES.map((emp, i) => {
+                    const isSelected = selectedEmployee.name === emp.name;
+                    return (
+                      <div
+                        key={i}
+                        onClick={() => setSelectedEmployee(emp)}
+                        className="emp-card"
+                        style={{
+                          background: isSelected ? emp.bg : "#111",
+                          border: `1px solid ${isSelected ? emp.color + "50" : "#1A1A1A"}`,
+                          borderRadius: 12,
+                          padding: "12px",
+                          textAlign: "center" as const,
+                        }}
+                      >
+                        <div style={{ width: 32, height: 32, borderRadius: 9, background: emp.bg, border: `1px solid ${emp.color}30`, display: "flex", alignItems: "center", justifyContent: "center", color: emp.color, fontWeight: 900, fontSize: 13, margin: "0 auto 8px" }}>
+                          {emp.avatar}
+                        </div>
+                        <p style={{ color: isSelected ? "#fff" : "#555", fontSize: 12, fontWeight: 700 }}>{emp.name}</p>
+                        <p style={{ color: emp.color, fontSize: 9, fontWeight: 600, marginTop: 2, letterSpacing: "0.05em" }}>{emp.role.split(" ")[0].toUpperCase()}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <input
+                  value={taskTitle}
+                  onChange={e => setTaskTitle(e.target.value)}
+                  placeholder="Task title (optional)"
+                  style={{ width: "100%", background: "#111", border: "1px solid #1A1A1A", borderRadius: 10, padding: "11px 14px", color: "#fff", fontSize: 13, fontFamily: "inherit", marginBottom: 10, transition: "border-color 0.2s" }}
+                />
+
+                <textarea
+                  value={taskPrompt}
+                  onChange={e => setTaskPrompt(e.target.value)}
+                  placeholder={`What do you want ${selectedEmployee.name} to do?`}
+                  rows={4}
+                  style={{ width: "100%", background: "#111", border: "1px solid #1A1A1A", borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 13, fontFamily: "inherit", marginBottom: 14, transition: "border-color 0.2s" }}
+                />
+
+                <button
+                  onClick={runTask}
+                  disabled={running || !taskPrompt.trim()}
+                  style={{ width: "100%", padding: "13px", background: running || !taskPrompt.trim() ? "#1A1A1A" : selectedEmployee.color, border: "none", borderRadius: 10, color: running || !taskPrompt.trim() ? "#333" : "#000", fontWeight: 800, fontSize: 14, cursor: running || !taskPrompt.trim() ? "not-allowed" : "pointer", fontFamily: "inherit", letterSpacing: "-0.01em", transition: "all 0.2s" }}
+                >
+                  {running ? `${selectedEmployee.name} is working...` : `Run with ${selectedEmployee.name} →`}
+                </button>
+              </div>
+
+              {/* Output */}
+              {(output || error || running) && (
+                <div style={{ background: "#0A0A0A", border: `1px solid ${error ? "#3A1A1A" : "#1A1A1A"}`, borderRadius: 16, padding: 24 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+                    <div style={{ width: 8, height: 8, borderRadius: "50%", background: running ? selectedEmployee.color : error ? "#f87171" : "#4ade80" }} />
+                    <p style={{ color: "#666", fontSize: 11, fontWeight: 700, letterSpacing: "0.08em" }}>
+                      {running ? `${selectedEmployee.name.toUpperCase()} IS WORKING` : error ? "ERROR" : "DELIVERABLE"}
+                    </p>
+                  </div>
+                  {running && <p style={{ color: "#444", fontSize: 13 }}>Your employee is thinking and working on your task...</p>}
+                  {error && <p style={{ color: "#f87171", fontSize: 13 }}>{error}</p>}
+                  {output && (
+                    <div style={{ color: "#CCC", fontSize: 13, lineHeight: 1.8, whiteSpace: "pre-wrap", fontFamily: "monospace" }}>
+                      {output}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TASKS TAB */}
+          {activeTab === "tasks" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {tasks.length === 0 ? (
+                <div style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 16, padding: "48px 32px", textAlign: "center" }}>
+                  <p style={{ color: "#333", fontSize: 14 }}>No tasks yet. Assign your first task from the dashboard.</p>
+                </div>
+              ) : tasks.map((task, i) => (
+                <div key={i} style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 14, padding: "18px 20px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <p style={{ fontWeight: 700, fontSize: 14 }}>{task.title}</p>
+                    <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: task.status === "completed" ? "#052e16" : task.status === "failed" ? "#1A0A0A" : "#1A1A1A", color: task.status === "completed" ? "#4ade80" : task.status === "failed" ? "#f87171" : "#555" }}>
+                      {task.status.toUpperCase()}
+                    </span>
+                  </div>
+                  <p style={{ color: "#555", fontSize: 13, marginBottom: task.output ? 12 : 0 }}>{task.prompt}</p>
+                  {task.output && (
+                    <div style={{ background: "#111", border: "1px solid #1A1A1A", borderRadius: 10, padding: 14, color: "#888", fontSize: 12, lineHeight: 1.7, whiteSpace: "pre-wrap", fontFamily: "monospace", maxHeight: 200, overflow: "auto" }}>
+                      {task.output}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* EMPLOYEES TAB */}
+          {activeTab === "employees" && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 16 }}>
+              {DEFAULT_EMPLOYEES.map((emp, i) => (
+                <div key={i} style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 16, padding: 24 }}>
+                  <div style={{ width: 48, height: 48, borderRadius: 14, background: emp.bg, border: `1px solid ${emp.color}25`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, fontWeight: 900, color: emp.color, marginBottom: 16 }}>
+                    {emp.avatar}
+                  </div>
+                  <h3 style={{ fontWeight: 800, fontSize: 16, marginBottom: 3, letterSpacing: "-0.02em" }}>{emp.name}</h3>
+                  <p style={{ color: emp.color, fontSize: 10, fontWeight: 700, marginBottom: 14, letterSpacing: "0.08em" }}>{emp.role.toUpperCase()}</p>
+                  <p style={{ color: "#444", fontSize: 13, lineHeight: 1.6, marginBottom: 16 }}>Trained on your business. Gets smarter with every task.</p>
+                  <button
+                    onClick={() => { setSelectedEmployee(emp); setActiveTab("dashboard"); }}
+                    style={{ width: "100%", padding: "10px", background: emp.color, border: "none", borderRadius: 9, color: "#000", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}
+                  >
+                    Assign Task →
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* API KEYS TAB */}
+          {activeTab === "apikeys" && (
+            <div>
+              <div style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 16, padding: 24, marginBottom: 16 }}>
+                <p style={{ color: "#444", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 16 }}>CONNECTED KEYS</p>
+                {Object.keys(apiKeys).length === 0 ? (
+                  <p style={{ color: "#333", fontSize: 14 }}>No keys connected yet.</p>
+                ) : Object.entries(apiKeys).map(([provider, key]: any) => (
+                  <div key={provider} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "#111", border: "1px solid #1A1A1A", borderRadius: 10, marginBottom: 10 }}>
+                    <div>
+                      <p style={{ color: "#fff", fontSize: 13, fontWeight: 700, textTransform: "capitalize" as const }}>{provider}</p>
+                      <p style={{ color: "#444", fontSize: 12, fontFamily: "monospace" }}>{key.slice(0, 8)}••••••••</p>
+                    </div>
+                    <span style={{ color: "#4ade80", fontSize: 10, fontWeight: 700, background: "#052e16", border: "1px solid #16a34a30", borderRadius: 20, padding: "3px 10px" }}>● ACTIVE</span>
+                  </div>
+                ))}
+              </div>
+              <button onClick={() => setShowKeyModal(true)} style={{ background: "#fff", border: "none", borderRadius: 10, padding: "12px 24px", color: "#000", fontSize: 14, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
+                + Add API Key
+              </button>
+            </div>
+          )}
+
+          {/* ACTIVITY TAB */}
+          {activeTab === "activity" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {tasks.length === 0 ? (
+                <div style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 16, padding: "48px 32px", textAlign: "center" }}>
+                  <p style={{ color: "#333", fontSize: 14 }}>No activity yet.</p>
+                </div>
+              ) : tasks.map((task, i) => (
+                <div key={i} style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 12, padding: "14px 18px", display: "flex", alignItems: "center", gap: 14 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: task.status === "completed" ? "#4ade80" : task.status === "failed" ? "#f87171" : "#555", flexShrink: 0 }} />
+                  <div style={{ flex: 1 }}>
+                    <p style={{ color: "#ccc", fontSize: 13, fontWeight: 600 }}>{task.title}</p>
+                    <p style={{ color: "#444", fontSize: 11, marginTop: 2 }}>{new Date(task.created_at).toLocaleString()}</p>
+                  </div>
+                  <span style={{ color: "#555", fontSize: 11, fontWeight: 600 }}>{task.status}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+        </div>
+      </div>
+    </div>
+  );
+}
