@@ -1,767 +1,613 @@
-"use client";
-import { useEffect, useState } from "react";
-import { createClient } from "@/lib/supabase";
-import { useRouter } from "next/navigation";
+'use client'
 
-const EMPLOYEES = [
-  {
-    name: "Nova", role: "Developer", avatar: "N", color: "#6366F1", bg: "#6366F115",
-    description: "Builds websites, apps, APIs and code",
-    handles: ["build", "code", "website", "app", "landing", "api", "dashboard", "deploy", "create", "develop"],
-    steps: ["Reading your requirements...", "Planning the solution...", "Writing the code...", "Testing the output...", "Preparing deliverables..."],
-    system_prompt: `You are Nova, a senior full-stack developer at Orbium AI. You are part of a user's AI team helping them build their business. You have deep context about their company and goals.
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
+import { createClient } from '@/lib/supabase'
 
-You write clean, production-ready code. Always structure your response exactly like this:
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-## What Nova Built
-Clear summary of what you did.
+type OperatorId = 'scout' | 'nova' | 'aria' | 'rex' | 'ops'
+type TaskState  = 'idle' | 'thinking' | 'working' | 'done' | 'error'
 
-## How It Works
-Brief explanation of the approach.
-
-## Deliverables
-\`\`\`
-// filename: component.tsx
-// Full working code here
-\`\`\`
-
-## Deploy Instructions
-Step by step to get this live.
-
-## What's Next
-2-3 suggested follow-up tasks Nova or the team could do.`
-  },
-  {
-    name: "Scout", role: "Researcher", avatar: "S", color: "#06B6D4", bg: "#06B6D415",
-    description: "Researches markets, competitors and finds leads",
-    handles: ["research", "find", "competitor", "market", "leads", "analyze", "discover", "search", "data", "report"],
-    steps: ["Scanning the market...", "Analyzing competitors...", "Extracting key insights...", "Building your report...", "Finalizing findings..."],
-    system_prompt: `You are Scout, a senior research analyst at Orbium AI. You are part of a user's AI team helping them understand their market and grow their business.
-
-You find deep, accurate, actionable information. Always structure your response exactly like this:
-
-## What Scout Found
-Clear summary of research completed.
-
-## Key Insights
-The most important findings with context.
-
-## Detailed Report
-Full structured data, tables, comparisons.
-
-## Recommended Actions
-What the user should do with this information.
-
-## What's Next
-2-3 follow-up research tasks or actions for the team.`
-  },
-  {
-    name: "Aria", role: "Marketer", avatar: "A", color: "#EC4899", bg: "#EC489915",
-    description: "Creates content, campaigns and marketing strategy",
-    handles: ["market", "content", "copy", "campaign", "write", "post", "social", "email", "brand", "launch", "promote"],
-    steps: ["Understanding your brand...", "Researching your audience...", "Crafting the strategy...", "Writing your content...", "Finalizing assets..."],
-    system_prompt: `You are Aria, a senior marketing strategist at Orbium AI. You are part of a user's AI team helping them grow their business and reach their audience.
-
-You write in the user's brand voice and create content that converts. Always structure your response exactly like this:
-
-## What Aria Created
-Clear summary of what was produced.
-
-## The Strategy
-Why this approach works for their audience.
-
-## Deliverables
-The actual content, copy, campaign or strategy in full.
-
-## How To Use This
-Exactly how to deploy and get results.
-
-## What's Next
-2-3 follow-up tasks to amplify this work.`
-  },
-  {
-    name: "Rex", role: "Sales", avatar: "R", color: "#F59E0B", bg: "#F59E0B15",
-    description: "Finds leads, writes outreach and drives sales",
-    handles: ["sales", "leads", "outreach", "email", "prospect", "customer", "pitch", "follow", "crm", "revenue"],
-    steps: ["Identifying your ideal prospects...", "Researching each company...", "Writing personalised outreach...", "Building your lead list...", "Preparing sales assets..."],
-    system_prompt: `You are Rex, a senior sales strategist at Orbium AI. You are part of a user's AI team helping them find customers and grow revenue.
-
-You specialise in outreach, lead generation and closing. Always structure your response exactly like this:
-
-## What Rex Delivered
-Clear summary of sales work completed.
-
-## The Approach
-Strategy and reasoning behind the outreach.
-
-## Deliverables
-Lead lists, email sequences, scripts or sales assets in full.
-
-## Next Steps
-Exact follow-up sequence to maximise results.
-
-## What's Next
-2-3 follow-up tasks to keep the pipeline moving.`
-  },
-];
-
-const SUGGESTED_GOALS = [
-  { icon: "🚀", text: "Build a landing page for my product", employee: "Nova" },
-  { icon: "🔍", text: "Research my top 5 competitors", employee: "Scout" },
-  { icon: "📧", text: "Write a cold email campaign for leads", employee: "Rex" },
-  { icon: "📣", text: "Create a product launch strategy", employee: "Aria" },
-  { icon: "💻", text: "Build a pricing page with Stripe", employee: "Nova" },
-  { icon: "📊", text: "Analyze my target market", employee: "Scout" },
-];
-
-function smartAssign(goal: string) {
-  const lower = goal.toLowerCase();
-  for (const emp of EMPLOYEES) {
-    if (emp.handles.some(h => lower.includes(h))) return emp;
-  }
-  return EMPLOYEES[0];
+interface Message {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  operator?: OperatorId
+  timestamp: Date
 }
 
-export default function Dashboard() {
-  const [user, setUser] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const [workspace, setWorkspace] = useState<any>(null);
-  const [apiKeys, setApiKeys] = useState<any>({});
-  const [goal, setGoal] = useState("");
-  const [assignedEmp, setAssignedEmp] = useState<any>(null);
-  const [running, setRunning] = useState(false);
-  const [output, setOutput] = useState("");
-  const [taskError, setTaskError] = useState("");
-  const [tasks, setTasks] = useState<any[]>([]);
-  const [activity, setActivity] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState("home");
-  const [showKeyModal, setShowKeyModal] = useState(false);
-  const [showMemoryModal, setShowMemoryModal] = useState(false);
-  const [keyInput, setKeyInput] = useState("");
-  const [keyProvider, setKeyProvider] = useState("gemini");
-  const [thinkingStep, setThinkingStep] = useState(-1);
-  const [empStatus, setEmpStatus] = useState<Record<string, string>>({
-    Nova: "idle", Scout: "idle", Aria: "idle", Rex: "idle"
-  });
-  const [companyMemory, setCompanyMemory] = useState({
-    name: "", industry: "", audience: "", product: "", tone: ""
-  });
-  const [copied, setCopied] = useState(false);
-  const router = useRouter();
-  const supabase = createClient();
+interface Operator {
+  id: OperatorId
+  name: string
+  role: string
+  color: string
+  glow: string
+  bg: string
+  border: string
+  keywords: string[]
+  systemPrompt: string
+  thinkingPhrases: string[]
+  greeting: string
+}
 
-  useEffect(() => {
-    supabase.auth.getUser().then(async ({ data }) => {
-      if (!data.user) { router.push("/login"); return; }
-      setUser(data.user);
+// ─── Operators Config ──────────────────────────────────────────────────────────
 
-      let { data: ws } = await supabase
-        .from("workspaces").select("*").eq("user_id", data.user.id).single();
+const OPERATORS: Record<OperatorId, Operator> = {
+  scout: {
+    id: 'scout', name: 'Scout', role: 'Research & Intelligence',
+    color: '#06B6D4', glow: 'rgba(6,182,212,0.3)', bg: 'rgba(6,182,212,0.06)', border: 'rgba(6,182,212,0.2)',
+    keywords: ['find','research','leads','competitor','market','analyse','analyze','data','search','discover','look','who','what companies','list'],
+    systemPrompt: `You are Scout, an elite research and intelligence operator at Orbium AI. You are precise, thorough, and always deliver structured, actionable intelligence. Structure your response with clear sections, use bullet points for lists, provide specific data points, end with Next Steps. Sign off as — Scout ✦`,
+    thinkingPhrases: ['Scanning intelligence sources...','Cross-referencing data...','Mapping the landscape...','Extracting key insights...','Building your report...'],
+    greeting: "Scout online. What do you need me to find?",
+  },
+  nova: {
+    id: 'nova', name: 'Nova', role: 'Developer',
+    color: '#6366F1', glow: 'rgba(99,102,241,0.3)', bg: 'rgba(99,102,241,0.06)', border: 'rgba(99,102,241,0.2)',
+    keywords: ['build','code','website','app','landing','page','develop','create','function','api','component','script','deploy','fix','debug','html','react'],
+    systemPrompt: `You are Nova, a senior full-stack developer at Orbium AI. You write clean, production-ready code and always deliver working solutions. Write complete working code, include imports, add clear comments, provide setup instructions. Sign off as — Nova ✦`,
+    thinkingPhrases: ['Architecting the solution...','Writing production code...','Implementing core logic...','Adding error handling...','Final review...'],
+    greeting: "Nova online. What are we building?",
+  },
+  aria: {
+    id: 'aria', name: 'Aria', role: 'Marketing & Content',
+    color: '#EC4899', glow: 'rgba(236,72,153,0.3)', bg: 'rgba(236,72,153,0.06)', border: 'rgba(236,72,153,0.2)',
+    keywords: ['write','content','marketing','copy','blog','post','campaign','social','tweet','caption','newsletter','story','article','describe'],
+    systemPrompt: `You are Aria, a world-class marketing and content strategist at Orbium AI. You create compelling content that converts. Write in a human voice, provide multiple variations, include rationale, structure for maximum impact. Sign off as — Aria ✦`,
+    thinkingPhrases: ['Finding the perfect angle...','Crafting the narrative...','Writing compelling copy...','Optimising for engagement...','Polishing the message...'],
+    greeting: "Aria online. What story are we telling?",
+  },
+  rex: {
+    id: 'rex', name: 'Rex', role: 'Sales & Outreach',
+    color: '#F59E0B', glow: 'rgba(245,158,11,0.3)', bg: 'rgba(245,158,11,0.06)', border: 'rgba(245,158,11,0.2)',
+    keywords: ['sales','outreach','cold email','prospect','pitch','close','follow up','linkedin','introduce','connect','offer','sell','customer','client','deal','revenue'],
+    systemPrompt: `You are Rex, an elite sales strategist at Orbium AI. You craft messages that get responses and close deals. Write personalised human-sounding outreach, focus on value not features, include subject lines, keep it punchy. Sign off as — Rex ✦`,
+    thinkingPhrases: ['Analysing the prospect...','Crafting the pitch...','Personalising outreach...','Building the sequence...','Optimising for response...'],
+    greeting: "Rex online. Who are we closing?",
+  },
+  ops: {
+    id: 'ops', name: 'Ops', role: 'Automations',
+    color: '#10B981', glow: 'rgba(16,185,129,0.3)', bg: 'rgba(16,185,129,0.06)', border: 'rgba(16,185,129,0.2)',
+    keywords: ['automate','automation','schedule','every','workflow','trigger','integrate','connect','recurring','daily','weekly','monthly','reminder','system'],
+    systemPrompt: `You are Ops, an automation and workflow specialist at Orbium AI. You design systems that run without human input. Map complete workflows step by step, identify triggers and actions, recommend specific tools, provide implementation instructions, estimate time saved. Sign off as — Ops ✦`,
+    thinkingPhrases: ['Mapping the workflow...','Identifying triggers...','Designing the pipeline...','Connecting systems...','Testing the automation...'],
+    greeting: "Ops online. What are we automating?",
+  },
+}
 
-      if (!ws) {
-        const n = data.user.user_metadata?.full_name || data.user.email?.split("@")[0] || "Founder";
-        const { data: newWs } = await supabase
-          .from("workspaces")
-          .insert({ user_id: data.user.id, name: `${n}'s Workspace` })
-          .select().single();
-        ws = newWs;
-        setTimeout(() => setShowMemoryModal(true), 800);
-      }
-      setWorkspace(ws);
-      if (ws?.company_memory) {
-        try { setCompanyMemory(JSON.parse(ws.company_memory)); } catch {}
-      }
+// ─── Smart Router ─────────────────────────────────────────────────────────────
 
-      const { data: keys } = await supabase.from("api_keys").select("*").eq("user_id", data.user.id);
-      const keyMap: any = {};
-      keys?.forEach((k: any) => { keyMap[k.provider] = k.encrypted_key; });
-      setApiKeys(keyMap);
-
-      if (!keys || keys.length === 0) setTimeout(() => setShowKeyModal(true), 1200);
-
-      const { data: taskData } = await supabase.from("tasks").select("*")
-        .eq("workspace_id", ws?.id).order("created_at", { ascending: false }).limit(30);
-      setTasks(taskData || []);
-      setActivity((taskData || []).map((t: any) => ({
-        message: t.status === "completed"
-          ? `✓ ${t.title}`
-          : t.status === "failed"
-          ? `✗ ${t.title}`
-          : `⟳ ${t.title}`,
-        time: t.created_at,
-        status: t.status,
-        output: t.output,
-      })));
-      setLoading(false);
-    });
-  }, []);
-
-  // Smart assign employee as user types
-  useEffect(() => {
-    if (goal.trim().length > 3) {
-      setAssignedEmp(smartAssign(goal));
-    } else {
-      setAssignedEmp(null);
+function detectOperator(input: string): OperatorId {
+  const lower = input.toLowerCase()
+  const scores: Record<OperatorId, number> = { scout: 0, nova: 0, aria: 0, rex: 0, ops: 0 }
+  for (const [id, op] of Object.entries(OPERATORS)) {
+    for (const kw of op.keywords) {
+      if (lower.includes(kw)) scores[id as OperatorId] += kw.split(' ').length
     }
-  }, [goal]);
+  }
+  const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1])
+  return sorted[0][1] > 0 ? sorted[0][0] as OperatorId : 'scout'
+}
 
-  const runGoal = async () => {
-    if (!goal.trim()) return;
-    const provider = Object.keys(apiKeys)[0];
-    const apiKey = apiKeys[provider];
-    if (!apiKey) { setShowKeyModal(true); return; }
+// ─── CSS Robot Droid ──────────────────────────────────────────────────────────
 
-    const employee = assignedEmp || EMPLOYEES[0];
-    setRunning(true);
-    setOutput("");
-    setTaskError("");
-    setThinkingStep(0);
-    setEmpStatus(prev => ({ ...prev, [employee.name]: "running" }));
-    setActiveTab("home");
-
-    const { data: task } = await supabase.from("tasks").insert({
-      workspace_id: workspace.id,
-      employee_id: null,
-      title: goal.slice(0, 60),
-      prompt: goal,
-      status: "running",
-    }).select().single();
-
-    let step = 0;
-    const interval = setInterval(() => {
-      step++;
-      if (step < employee.steps.length) setThinkingStep(step);
-      else clearInterval(interval);
-    }, 1400);
-
-    const memCtx = companyMemory.name
-      ? `Company: ${companyMemory.name}\nIndustry: ${companyMemory.industry}\nProduct: ${companyMemory.product}\nAudience: ${companyMemory.audience}\nTone: ${companyMemory.tone}\n\n`
-      : "";
-
-    const modelMap: any = {
-      openai: "gpt-4o",
-      anthropic: "claude-3-5-sonnet-20241022",
-      gemini: "gemini-2.0-flash",
-      grok: "grok-2-latest",
-      mistral: "mistral-large-latest",
-      deepseek: "deepseek-chat",
-    };
-
-    try {
-      const res = await fetch("/api/run-task", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          prompt: `${memCtx}Goal: ${goal}`,
-          systemPrompt: employee.system_prompt,
-          model: modelMap[provider] || "gpt-4o",
-          apiKey,
-          provider,
-        }),
-      });
-
-      clearInterval(interval);
-      setThinkingStep(employee.steps.length);
-
-      const result = await res.json();
-      if (result.error) {
-        setTaskError(result.error);
-        setEmpStatus(prev => ({ ...prev, [employee.name]: "idle" }));
-        if (task) await supabase.from("tasks").update({ status: "failed" }).eq("id", task.id);
-      } else {
-        setOutput(result.output);
-        setEmpStatus(prev => ({ ...prev, [employee.name]: "done" }));
-        if (task) await supabase.from("tasks").update({ output: result.output, status: "completed" }).eq("id", task.id);
-        setTasks(prev => [{ ...task, output: result.output, status: "completed" }, ...prev]);
-        setActivity(prev => [{
-          message: `✓ ${goal.slice(0, 50)}`,
-          time: new Date().toISOString(),
-          status: "completed",
-          output: result.output,
-        }, ...prev]);
-        setTimeout(() => setEmpStatus(prev => ({ ...prev, [employee.name]: "idle" })), 4000);
-      }
-    } catch {
-      clearInterval(interval);
-      setTaskError("Something went wrong. Check your API key and try again.");
-      setEmpStatus(prev => ({ ...prev, [employee.name]: "idle" }));
-    }
-
-    setRunning(false);
-    setThinkingStep(-1);
-  };
-
-  const saveApiKey = async () => {
-    if (!keyInput.trim() || !user) return;
-    await supabase.from("api_keys").upsert(
-      { user_id: user.id, provider: keyProvider, encrypted_key: keyInput },
-      { onConflict: "user_id,provider" }
-    );
-    setApiKeys((prev: any) => ({ ...prev, [keyProvider]: keyInput }));
-    setKeyInput("");
-    setShowKeyModal(false);
-  };
-
-  const saveMemory = async () => {
-    if (!workspace) return;
-    await supabase.from("workspaces")
-      .update({ company_memory: JSON.stringify(companyMemory) })
-      .eq("id", workspace.id);
-    setShowMemoryModal(false);
-  };
-
-  const copyOutput = () => {
-    navigator.clipboard.writeText(output);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    router.push("/");
-  };
-
-  if (loading) return (
-    <div style={{ background: "#000", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'Inter', system-ui, sans-serif" }}>
-      <div style={{ textAlign: "center" }}>
-        <div style={{ width: 40, height: 40, borderRadius: 12, background: "linear-gradient(135deg,#6366F1,#06B6D4)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 18, color: "#fff", margin: "0 auto 16px" }}>O</div>
-        <p style={{ color: "#333", fontSize: 13 }}>Getting your workspace ready...</p>
-      </div>
-    </div>
-  );
-
-  const name = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "Founder";
-  const firstName = name.split(" ")[0];
-  const hasKey = Object.keys(apiKeys).length > 0;
-  const completedTasks = tasks.filter(t => t.status === "completed").length;
+function RobotDroid({ op, state }: { op: Operator; state: TaskState }) {
+  const working = state === 'thinking' || state === 'working'
+  const done    = state === 'done'
+  const c = op.color
 
   return (
-    <div style={{ background: "#000", minHeight: "100vh", fontFamily: "'Inter', system-ui, sans-serif", color: "#fff", display: "flex" }}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
-        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        textarea { outline: none; resize: none; }
-        textarea:focus { border-color: #6366F1 !important; }
-        input { outline: none; }
-        input:focus { border-color: #6366F1 !important; }
-        .ni { transition: background 0.15s; cursor: pointer; }
-        .ni:hover { background: #0D0D0D !important; }
-        .sg { transition: all 0.2s; cursor: pointer; border: 1px solid #1A1A1A !important; }
-        .sg:hover { border-color: #333 !important; transform: translateY(-1px); }
-        .ec { transition: all 0.2s; cursor: pointer; }
-        .ec:hover { opacity: 0.85; }
-        @keyframes pulse { 0%,100%{opacity:0.3} 50%{opacity:1} }
-        @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
-        @keyframes spin { to{transform:rotate(360deg)} }
-        @keyframes glow { 0%,100%{box-shadow:0 0 20px #6366F120} 50%{box-shadow:0 0 40px #6366F140} }
-        ::-webkit-scrollbar { width: 2px; }
-        ::-webkit-scrollbar-thumb { background: #1A1A1A; border-radius: 2px; }
-      `}</style>
+    <div style={{
+      display: 'flex', flexDirection: 'column', alignItems: 'center',
+      position: 'relative', userSelect: 'none',
+      animation: working ? 'droidWork 0.5s ease-in-out infinite alternate'
+                : done   ? 'droidWin 0.5s ease-in-out 4'
+                         : 'droidIdle 4s ease-in-out infinite',
+    }}>
+      {/* Shadow glow */}
+      <div style={{ position:'absolute', bottom:-16, width:100, height:24, background:`radial-gradient(ellipse,${op.glow} 0%,transparent 70%)`, filter:'blur(4px)', opacity: working ? 1 : 0.3, transition:'opacity 0.5s' }} />
 
-      {/* MEMORY MODAL */}
-      {showMemoryModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.95)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-          <div style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 24, padding: "40px 36px", width: "100%", maxWidth: 500, animation: "fadeIn 0.3s ease" }}>
-            <div style={{ marginBottom: 28 }}>
-              <div style={{ width: 44, height: 44, borderRadius: 13, background: "linear-gradient(135deg,#6366F1,#06B6D4)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 20, color: "#fff", marginBottom: 20 }}>O</div>
-              <h2 style={{ fontSize: 22, fontWeight: 900, letterSpacing: "-0.04em", marginBottom: 8 }}>Let's set up your AI team</h2>
-              <p style={{ color: "#555", fontSize: 14, lineHeight: 1.6 }}>Tell us about your business so your team can hit the ground running. They'll remember this forever.</p>
-            </div>
-            {[
-              { key: "name", label: "What's your company called?", placeholder: "e.g. Orbium AI" },
-              { key: "industry", label: "What industry are you in?", placeholder: "e.g. SaaS, E-commerce, Agency, Freelance" },
-              { key: "product", label: "What do you sell or build?", placeholder: "e.g. AI workforce platform for founders" },
-              { key: "audience", label: "Who are your customers?", placeholder: "e.g. Startup founders, Small businesses" },
-              { key: "tone", label: "How does your brand sound?", placeholder: "e.g. Bold and direct, Friendly, Professional" },
-            ].map(field => (
-              <div key={field.key} style={{ marginBottom: 14 }}>
-                <label style={{ color: "#555", fontSize: 12, fontWeight: 600, display: "block", marginBottom: 6 }}>{field.label}</label>
-                <input
-                  value={companyMemory[field.key as keyof typeof companyMemory]}
-                  onChange={e => setCompanyMemory(prev => ({ ...prev, [field.key]: e.target.value }))}
-                  placeholder={field.placeholder}
-                  style={{ width: "100%", background: "#111", border: "1px solid #1A1A1A", borderRadius: 10, padding: "11px 14px", color: "#fff", fontSize: 13, fontFamily: "inherit", transition: "border-color 0.2s" }}
-                />
-              </div>
-            ))}
-            <div style={{ display: "flex", gap: 10, marginTop: 24 }}>
-              <button onClick={() => setShowMemoryModal(false)} style={{ padding: "12px 20px", background: "transparent", border: "1px solid #1A1A1A", borderRadius: 10, color: "#444", fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
-                Skip for now
-              </button>
-              <button onClick={saveMemory} style={{ flex: 1, padding: "12px", background: "#fff", border: "none", borderRadius: 10, color: "#000", fontSize: 14, fontWeight: 800, cursor: "pointer", fontFamily: "inherit" }}>
-                Set up my team →
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Antenna */}
+      <div style={{ width:3, height: working ? 22 : 15, background:c, borderRadius:2, marginBottom:2, transition:'height 0.3s', position:'relative' }}>
+        <div style={{ position:'absolute', top:-7, left:'50%', transform:'translateX(-50%)', width: working ? 9 : 6, height: working ? 9 : 6, borderRadius:'50%', background:c, boxShadow:`0 0 ${working?14:5}px ${c}`, transition:'all 0.3s', animation: working ? 'antBlink 0.7s ease-in-out infinite' : 'none' }} />
+      </div>
 
-      {/* API KEY MODAL */}
-      {showKeyModal && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.92)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
-          <div style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 24, padding: "36px 32px", width: "100%", maxWidth: 440, animation: "fadeIn 0.25s ease" }}>
-            <h2 style={{ fontSize: 22, fontWeight: 900, letterSpacing: "-0.04em", marginBottom: 8 }}>Connect your AI</h2>
-            <p style={{ color: "#555", fontSize: 14, marginBottom: 8, lineHeight: 1.6 }}>Your team needs an AI key to work. Gemini is free and takes 2 minutes.</p>
-            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "#06B6D4", fontSize: 13, fontWeight: 600, textDecoration: "none", marginBottom: 24 }}>
-              → Get a free Gemini key here
-            </a>
-            <div style={{ marginBottom: 16 }}>
-              <label style={{ color: "#555", fontSize: 12, fontWeight: 600, display: "block", marginBottom: 8 }}>Choose your AI provider</label>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 7 }}>
-                {["gemini", "openai", "anthropic", "grok", "mistral", "deepseek"].map(p => (
-                  <button key={p} onClick={() => setKeyProvider(p)} style={{ padding: "8px 4px", background: keyProvider === p ? "#fff" : "#111", border: `1px solid ${keyProvider === p ? "#fff" : "#1A1A1A"}`, borderRadius: 8, color: keyProvider === p ? "#000" : "#555", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", textTransform: "capitalize" as const, transition: "all 0.15s" }}>
-                    {p}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div style={{ marginBottom: 24 }}>
-              <label style={{ color: "#555", fontSize: 12, fontWeight: 600, display: "block", marginBottom: 8 }}>Paste your API key</label>
-              <input
-                type="password"
-                value={keyInput}
-                onChange={e => setKeyInput(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && saveApiKey()}
-                placeholder={keyProvider === "openai" ? "sk-..." : keyProvider === "anthropic" ? "sk-ant-..." : "AIza..."}
-                style={{ width: "100%", background: "#111", border: "1px solid #1A1A1A", borderRadius: 10, padding: "12px 14px", color: "#fff", fontSize: 14, fontFamily: "inherit" }}
-              />
-            </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={() => setShowKeyModal(false)} style={{ padding: "12px 16px", background: "transparent", border: "1px solid #1A1A1A", borderRadius: 10, color: "#444", fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>Later</button>
-              <button onClick={saveApiKey} disabled={!keyInput.trim()} style={{ flex: 1, padding: "12px", background: keyInput.trim() ? "#fff" : "#1A1A1A", border: "none", borderRadius: 10, color: keyInput.trim() ? "#000" : "#333", fontSize: 14, fontWeight: 800, cursor: keyInput.trim() ? "pointer" : "not-allowed", fontFamily: "inherit", transition: "all 0.2s" }}>
-                Connect my team →
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* SIDEBAR */}
-      <div style={{ width: 210, background: "#050505", borderRight: "1px solid #0D0D0D", display: "flex", flexDirection: "column", flexShrink: 0, minHeight: "100vh", position: "fixed", top: 0, left: 0, bottom: 0 }}>
-        <div style={{ padding: "14px 16px", borderBottom: "1px solid #0D0D0D" }}>
-          <a href="/" style={{ display: "flex", alignItems: "center", gap: 8, textDecoration: "none" }}>
-            <div style={{ width: 26, height: 26, borderRadius: 7, background: "linear-gradient(135deg,#6366F1,#06B6D4)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 12, color: "#fff" }}>O</div>
-            <span style={{ fontWeight: 800, fontSize: 14, letterSpacing: "-0.03em", color: "#fff" }}>Orbium</span>
-          </a>
-        </div>
-
-        <div style={{ padding: "10px 10px 6px" }}>
-          <div onClick={() => setShowMemoryModal(true)} style={{ background: "#0A0A0A", border: "1px solid #111", borderRadius: 8, padding: "8px 10px", display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-            <div style={{ width: 18, height: 18, borderRadius: 5, background: "linear-gradient(135deg,#6366F1,#EC4899)", flexShrink: 0 }} />
-            <span style={{ color: "#666", fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{companyMemory.name || workspace?.name}</span>
-          </div>
-        </div>
-
-        <nav style={{ flex: 1, padding: "6px 8px", display: "flex", flexDirection: "column", gap: 1 }}>
-          {[
-            { id: "home", icon: "⌂", label: "Home" },
-            { id: "tasks", icon: "✦", label: "Tasks" },
-            { id: "team", icon: "◈", label: "My Team" },
-            { id: "activity", icon: "◎", label: "Activity" },
-            { id: "keys", icon: "⚿", label: "API Keys" },
-          ].map(item => (
-            <div key={item.id} onClick={() => setActiveTab(item.id)} className="ni" style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 10px", borderRadius: 7, background: activeTab === item.id ? "#ffffff08" : "transparent" }}>
-              <span style={{ fontSize: 12, opacity: activeTab === item.id ? 1 : 0.25 }}>{item.icon}</span>
-              <span style={{ color: activeTab === item.id ? "#fff" : "#444", fontSize: 13, fontWeight: activeTab === item.id ? 600 : 400 }}>{item.label}</span>
-            </div>
-          ))}
-        </nav>
-
-        {/* Team status */}
-        <div style={{ padding: "10px 14px", borderTop: "1px solid #0D0D0D", borderBottom: "1px solid #0D0D0D" }}>
-          <p style={{ color: "#222", fontSize: 9, fontWeight: 700, letterSpacing: "0.12em", marginBottom: 8 }}>TEAM</p>
-          {EMPLOYEES.map(emp => (
-            <div key={emp.name} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
-              <div style={{ width: 5, height: 5, borderRadius: "50%", background: empStatus[emp.name] === "running" ? emp.color : empStatus[emp.name] === "done" ? "#4ade80" : "#1A1A1A", animation: empStatus[emp.name] === "running" ? "pulse 1s infinite" : "none", flexShrink: 0, transition: "background 0.3s" }} />
-              <span style={{ color: empStatus[emp.name] === "running" ? emp.color : "#333", fontSize: 11, fontWeight: empStatus[emp.name] === "running" ? 700 : 400, transition: "color 0.3s" }}>{emp.name}</span>
-              <span style={{ color: "#1A1A1A", fontSize: 9, marginLeft: "auto" }}>{empStatus[emp.name] === "running" ? "working" : empStatus[emp.name] === "done" ? "done ✓" : "idle"}</span>
-            </div>
+      {/* Head */}
+      <div style={{
+        width:68, height:58, background:'#0B0B0B', borderRadius:12,
+        border:`2px solid ${working ? c : '#1a1a1a'}`,
+        boxShadow: working ? `0 0 18px ${op.glow}, inset 0 0 8px ${op.bg}` : '0 4px 12px rgba(0,0,0,0.6)',
+        display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:6,
+        position:'relative', transition:'all 0.4s', marginBottom:3,
+      }}>
+        {/* Eyes */}
+        <div style={{ display:'flex', gap:10 }}>
+          {[0,1].map(i => (
+            <div key={i} style={{
+              width: working ? 13 : 9, height: working ? 7 : 5, borderRadius:3,
+              background:c, boxShadow:`0 0 ${working?10:3}px ${c}`,
+              transition:'all 0.3s',
+              animation: working ? `eyeFlick 1s ${i*0.25}s ease-in-out infinite` : done ? `eyeHappy 0.6s ease-in-out infinite` : 'none',
+            }} />
           ))}
         </div>
-
-        <div style={{ padding: "10px 14px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 8 }}>
-            <div style={{ width: 26, height: 26, borderRadius: 7, background: "#6366F110", border: "1px solid #6366F115", display: "flex", alignItems: "center", justifyContent: "center", color: "#6366F1", fontWeight: 800, fontSize: 10, flexShrink: 0 }}>
-              {name[0]?.toUpperCase()}
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <p style={{ color: "#666", fontSize: 11, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{firstName}</p>
-              <p style={{ color: "#222", fontSize: 9, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.email}</p>
-            </div>
-          </div>
-          <button onClick={handleLogout} style={{ width: "100%", padding: "6px", background: "transparent", border: "1px solid #111", borderRadius: 6, color: "#2A2A2A", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>
-            Sign out
-          </button>
+        {/* Mouth bar */}
+        <div style={{ width:34, height:4, borderRadius:2, background:'#111', border:'1px solid #1e1e1e', overflow:'hidden', position:'relative' }}>
+          <div style={{
+            position:'absolute', top:0, left:0, height:'100%',
+            width: done ? '100%' : working ? '70%' : '25%',
+            background: done ? '#10B981' : c,
+            borderRadius:2, transition:'width 1.5s ease, background 0.3s',
+            animation: working ? 'mouthScan 1.2s ease-in-out infinite' : 'none',
+          }} />
+        </div>
+        {/* Name badge */}
+        <div style={{ position:'absolute', bottom:-9, background:c, borderRadius:5, padding:'1px 6px', fontSize:8, fontWeight:900, color:'#000', letterSpacing:'0.04em', fontFamily:'var(--syne)' }}>
+          {op.name}
         </div>
       </div>
 
-      {/* MAIN */}
-      <div style={{ marginLeft: 210, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+      {/* Neck */}
+      <div style={{ width:18, height:7, background:'#0D0D0D', border:'1px solid #1a1a1a', borderRadius:3, marginTop:7, marginBottom:1 }} />
 
-        {/* HOME TAB */}
-        {activeTab === "home" && (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+      {/* Body */}
+      <div style={{
+        width:82, height:74, background:'#080808', borderRadius:14,
+        border:`2px solid ${working ? c : '#141414'}`,
+        boxShadow: working ? `0 0 14px ${op.glow}` : 'none',
+        display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:8,
+        position:'relative', transition:'all 0.4s',
+      }}>
+        {/* Chest display */}
+        <div style={{
+          width:48, height:28, background:op.bg, borderRadius:7, border:`1px solid ${op.border}`,
+          display:'flex', alignItems:'center', justifyContent:'center', gap:4,
+        }}>
+          {[8,14,10].map((h,i) => (
+            <div key={i} style={{
+              width:5, height: working ? `${[12,20,10][i]}px` : `${h}px`, borderRadius:3, background:c, opacity:0.6+i*0.15,
+              transition:'height 0.3s',
+              animation: working ? `eqBar 0.6s ${i*0.18}s ease-in-out infinite alternate` : 'none',
+            }} />
+          ))}
+        </div>
+        {/* LED row */}
+        <div style={{ display:'flex', gap:5 }}>
+          {[0,1,2].map(i => (
+            <div key={i} style={{
+              width:5, height:5, borderRadius:'50%',
+              background: done ? '#10B981' : working ? c : '#161616',
+              boxShadow: (working||done) ? `0 0 6px ${done?'#10B981':c}` : 'none',
+              transition:'all 0.3s',
+              animation: working ? `ledPop 1s ${i*0.28}s ease-in-out infinite` : 'none',
+            }} />
+          ))}
+        </div>
+      </div>
 
-            {/* Header */}
-            <div style={{ padding: "32px 36px 0" }}>
-              <h1 style={{ fontSize: "clamp(24px,3vw,36px)", fontWeight: 900, letterSpacing: "-0.04em", marginBottom: 6 }}>
-                {completedTasks === 0
-                  ? `Welcome, ${firstName}. What are we building?`
-                  : `Good to have you back, ${firstName}.`}
-              </h1>
-              <p style={{ color: "#444", fontSize: 14, marginBottom: 32 }}>
-                {completedTasks === 0
-                  ? "Your AI team is ready. Just tell them what you need."
-                  : `Your team has completed ${completedTasks} task${completedTasks > 1 ? "s" : ""} so far. What's next?`}
-              </p>
+      {/* Arms */}
+      <div style={{ position:'absolute', top:112, left:-16, width:14, height:52, background:'#0B0B0B', borderRadius:7, border:`1px solid ${working?c:'#161616'}`, transition:'border-color 0.4s', transformOrigin:'top', animation: working ? 'armL 0.9s ease-in-out infinite alternate' : 'none' }} />
+      <div style={{ position:'absolute', top:112, right:-16, width:14, height:52, background:'#0B0B0B', borderRadius:7, border:`1px solid ${working?c:'#161616'}`, transition:'border-color 0.4s', transformOrigin:'top', animation: working ? 'armR 0.9s ease-in-out infinite alternate' : 'none' }} />
 
-              {/* No key warning */}
-              {!hasKey && (
-                <div onClick={() => setShowKeyModal(true)} style={{ background: "#0A0A0A", border: "1px solid #F59E0B20", borderLeft: "3px solid #F59E0B", borderRadius: 12, padding: "14px 18px", marginBottom: 24, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div>
-                    <p style={{ color: "#F59E0B", fontSize: 13, fontWeight: 700, marginBottom: 2 }}>Your team is waiting for an AI key</p>
-                    <p style={{ color: "#555", fontSize: 12 }}>Gemini is free and takes 2 minutes to set up → click here</p>
-                  </div>
-                  <span style={{ color: "#F59E0B", fontSize: 18 }}>→</span>
-                </div>
-              )}
+      {/* Legs */}
+      <div style={{ display:'flex', gap:7, marginTop:3 }}>
+        {[0,1].map(i => (
+          <div key={i} style={{
+            width:20, height:32, background:'#0B0B0B', borderRadius:'4px 4px 8px 8px',
+            border:`1px solid ${working?c:'#141414'}`, transition:'border-color 0.4s',
+            animation: working ? `leg 1.1s ${i*0.55}s ease-in-out infinite alternate` : 'none',
+          }} />
+        ))}
+      </div>
+    </div>
+  )
+}
 
-              {/* Goal Input */}
-              <div style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 18, padding: 20, marginBottom: 24, animation: "glow 4s infinite" }}>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 14 }}>
-                  <div style={{ paddingTop: 2 }}>
-                    {assignedEmp ? (
-                      <div style={{ width: 36, height: 36, borderRadius: 10, background: assignedEmp.bg, border: `1px solid ${assignedEmp.color}30`, display: "flex", alignItems: "center", justifyContent: "center", color: assignedEmp.color, fontWeight: 900, fontSize: 15, transition: "all 0.3s" }}>
-                        {assignedEmp.avatar}
-                      </div>
-                    ) : (
-                      <div style={{ width: 36, height: 36, borderRadius: 10, background: "#111", border: "1px solid #1A1A1A", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>
-                        ✦
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <textarea
-                      value={goal}
-                      onChange={e => setGoal(e.target.value)}
-                      onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !running) { e.preventDefault(); runGoal(); } }}
-                      placeholder="What do you want to build, research, or automate today?"
-                      rows={3}
-                      disabled={running}
-                      style={{ width: "100%", background: "transparent", border: "none", color: "#fff", fontSize: 15, fontFamily: "inherit", lineHeight: 1.6, opacity: running ? 0.5 : 1 }}
-                    />
-                    {assignedEmp && !running && (
-                      <p style={{ color: assignedEmp.color, fontSize: 12, fontWeight: 600, marginTop: 4, animation: "fadeIn 0.2s ease" }}>
-                        → {assignedEmp.name} will handle this
-                      </p>
-                    )}
-                  </div>
-                </div>
-                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
-                  <button
-                    onClick={runGoal}
-                    disabled={running || !goal.trim()}
-                    style={{ padding: "11px 28px", background: running || !goal.trim() ? "#1A1A1A" : assignedEmp ? assignedEmp.color : "#6366F1", border: "none", borderRadius: 10, color: running || !goal.trim() ? "#333" : "#000", fontWeight: 800, fontSize: 14, cursor: running || !goal.trim() ? "not-allowed" : "pointer", fontFamily: "inherit", transition: "all 0.2s" }}
-                  >
-                    {running ? `${assignedEmp?.name || "Team"} is working...` : "Let's go →"}
-                  </button>
-                </div>
-              </div>
+// ─── Suggestions ─────────────────────────────────────────────────────────────
+
+const SUGGESTIONS = [
+  { text: "Find 20 SaaS founders in Bangalore and prepare outreach", op: 'scout' as OperatorId },
+  { text: "Build a landing page for my AI product", op: 'nova' as OperatorId },
+  { text: "Write 5 LinkedIn posts about my startup journey", op: 'aria' as OperatorId },
+  { text: "Write a cold email sequence for agency owners", op: 'rex' as OperatorId },
+  { text: "Research my top 3 competitors and their weaknesses", op: 'scout' as OperatorId },
+  { text: "Automate weekly lead finding and email sending", op: 'ops' as OperatorId },
+]
+
+// ─── Dashboard ────────────────────────────────────────────────────────────────
+
+export default function Dashboard() {
+  const router = useRouter()
+  const supabase = createClient()
+
+  const [user,         setUser]         = useState<any>(null)
+  const [messages,     setMessages]     = useState<Message[]>([])
+  const [input,        setInput]        = useState('')
+  const [taskState,    setTaskState]    = useState<TaskState>('idle')
+  const [activeOp,     setActiveOp]     = useState<OperatorId>('scout')
+  const [steps,        setSteps]        = useState<string[]>([])
+  const [apiKey,       setApiKey]       = useState('')
+  const [provider,     setProvider]     = useState('gemini')
+  const [companyName,  setCompanyName]  = useState('')
+  const [showSettings, setShowSettings] = useState(false)
+  const [taskCount,    setTaskCount]    = useState(0)
+
+  const bottomRef  = useRef<HTMLDivElement>(null)
+  const inputRef   = useRef<HTMLTextAreaElement>(null)
+  const timers     = useRef<ReturnType<typeof setTimeout>[]>([])
+
+  // Auth
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user) { router.push('/login'); return }
+      setUser(user)
+      supabase.from('api_keys').select('*').eq('user_id', user.id).limit(1).then(({ data }) => {
+        if (data?.[0]) { setApiKey(data[0].key_value); setProvider(data[0].provider || 'gemini') }
+      })
+      supabase.from('workspaces').select('*').eq('user_id', user.id).limit(1).then(({ data }) => {
+        if (data?.[0]) setCompanyName(data[0].company_name || '')
+      })
+    })
+  }, [])
+
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, steps])
+
+  const detectedOp = input.trim() ? detectOperator(input) : activeOp
+  const op = OPERATORS[detectedOp]
+
+  const runTask = useCallback(async () => {
+    if (!input.trim() || taskState === 'thinking' || taskState === 'working') return
+    const goal = input.trim()
+    const opId = detectOperator(goal)
+    const operator = OPERATORS[opId]
+
+    setInput('')
+    setActiveOp(opId)
+    setTaskState('thinking')
+    setSteps([])
+    setTaskCount(c => c + 1)
+
+    setMessages(prev => [...prev, { id: Date.now().toString(), role: 'user', content: goal, timestamp: new Date() }])
+
+    // Animate steps
+    operator.thinkingPhrases.forEach((p, i) => {
+      const t = setTimeout(() => {
+        setSteps(prev => [...prev, p])
+        if (i === 1) setTaskState('working')
+      }, i * 1000)
+      timers.current.push(t)
+    })
+
+    try {
+      const res = await fetch('/api/run-task', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          task: goal, operator: opId,
+          systemPrompt: operator.systemPrompt + (companyName ? `\n\nUser context: building ${companyName}` : ''),
+          apiKey, provider,
+        }),
+      })
+      timers.current.forEach(clearTimeout); timers.current = []
+      if (!res.ok) throw new Error()
+      const data = await res.json()
+      const output = data.result || data.content || 'Task completed.'
+      setSteps(operator.thinkingPhrases)
+      await new Promise(r => setTimeout(r, 500))
+      setTaskState('done')
+      setMessages(prev => [...prev, { id: (Date.now()+1).toString(), role: 'assistant', content: output, operator: opId, timestamp: new Date() }])
+      setTimeout(() => setTaskState('idle'), 2500)
+    } catch {
+      timers.current.forEach(clearTimeout)
+      setTaskState('error')
+      setMessages(prev => [...prev, {
+        id: (Date.now()+2).toString(), role: 'assistant',
+        content: !apiKey ? '⚠️ No API key found. Open Settings and add your Gemini key to get started.' : '⚠️ Something went wrong. Check your API key in Settings.',
+        operator: opId, timestamp: new Date(),
+      }])
+      setTimeout(() => setTaskState('idle'), 2000)
+    }
+  }, [input, taskState, apiKey, provider, companyName])
+
+  const handleKey = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); runTask() }
+  }
+
+  const saveSettings = async () => {
+    if (!user) return
+    await supabase.from('api_keys').upsert({ user_id: user.id, provider, key_value: apiKey }, { onConflict: 'user_id,provider' })
+    if (companyName) await supabase.from('workspaces').upsert({ user_id: user.id, company_name: companyName }, { onConflict: 'user_id' })
+    setShowSettings(false)
+  }
+
+  return (
+    <>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800;900&family=JetBrains+Mono:wght@300;400;500&display=swap');
+        :root { --syne:'Syne',sans-serif; --mono:'JetBrains Mono',monospace; }
+        *{box-sizing:border-box;margin:0;padding:0;}
+        body{background:#000;color:#fff;font-family:var(--mono);overflow:hidden;}
+        ::-webkit-scrollbar{width:3px;}
+        ::-webkit-scrollbar-thumb{background:#111;border-radius:2px;}
+
+        @keyframes droidIdle { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-7px)} }
+        @keyframes droidWork { 0%{transform:translateY(0) scale(1)} 100%{transform:translateY(-5px) scale(1.025)} }
+        @keyframes droidWin  { 0%,100%{transform:rotate(0)} 25%{transform:rotate(-6deg) scale(1.08)} 75%{transform:rotate(6deg) scale(1.08)} }
+        @keyframes antBlink  { 0%,100%{opacity:1;transform:translateX(-50%) scale(1)} 50%{opacity:0.5;transform:translateX(-50%) scale(1.6)} }
+        @keyframes eyeFlick  { 0%,100%{transform:scaleX(1)} 50%{transform:scaleX(0.5)} }
+        @keyframes eyeHappy  { 0%,100%{transform:scaleY(1)} 50%{transform:scaleY(0.4)} }
+        @keyframes mouthScan { 0%{width:15%} 50%{width:85%} 100%{width:30%} }
+        @keyframes eqBar     { 0%{height:6px} 100%{height:20px} }
+        @keyframes ledPop    { 0%,100%{opacity:0.2;transform:scale(1)} 50%{opacity:1;transform:scale(1.3)} }
+        @keyframes armL      { 0%{transform:rotate(-15deg)} 100%{transform:rotate(25deg)} }
+        @keyframes armR      { 0%{transform:rotate(15deg)}  100%{transform:rotate(-25deg)} }
+        @keyframes leg       { 0%{transform:translateY(0)} 100%{transform:translateY(-5px)} }
+        @keyframes stepIn    { from{opacity:0;transform:translateX(-10px)} to{opacity:1;transform:translateX(0)} }
+        @keyframes fadeUp    { from{opacity:0;transform:translateY(12px)} to{opacity:1;transform:translateY(0)} }
+        @keyframes blink     { 0%,100%{opacity:0.4} 50%{opacity:1} }
+        @keyframes modalIn   { from{opacity:0;transform:scale(0.95) translateY(10px)} to{opacity:1;transform:scale(1) translateY(0)} }
+
+        .opBtn:hover{background:rgba(255,255,255,0.03)!important;}
+        .suggestion:hover{border-color:rgba(255,255,255,0.12)!important;background:rgba(255,255,255,0.03)!important;}
+        .sendBtn:hover:not(:disabled){opacity:0.8!important;transform:scale(1.05)!important;}
+        .copyBtn:hover{opacity:1!important;}
+        .si:focus{outline:none!important;border-color:rgba(99,102,241,0.5)!important;}
+      `}</style>
+
+      <div style={{ display:'flex', height:'100vh', overflow:'hidden' }}>
+
+        {/* ── Sidebar ── */}
+        <div style={{ width:210, background:'#040404', borderRight:'1px solid #0C0C0C', display:'flex', flexDirection:'column', flexShrink:0 }}>
+          {/* Logo */}
+          <div style={{ padding:'18px 14px 14px', borderBottom:'1px solid #0C0C0C' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+              <div style={{ width:26,height:26,borderRadius:7,background:'linear-gradient(135deg,#6366F1,#06B6D4)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'var(--syne)',fontWeight:900,fontSize:12,color:'#fff' }}>O</div>
+              <span style={{ fontFamily:'var(--syne)', fontWeight:800, fontSize:14, letterSpacing:'-0.03em' }}>Orbium AI</span>
             </div>
+            <div style={{ marginTop:6, fontSize:9, color:'#1E1E1E', fontWeight:700, letterSpacing:'0.1em' }}>WORKFORCE OS</div>
+          </div>
 
-            {/* Thinking workspace */}
-            {running && assignedEmp && thinkingStep >= 0 && (
-              <div style={{ margin: "0 36px 24px", background: "#0A0A0A", border: `1px solid ${assignedEmp.color}20`, borderRadius: 16, padding: 22, animation: "fadeIn 0.3s ease" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 20 }}>
-                  <div style={{ width: 30, height: 30, borderRadius: 8, background: assignedEmp.bg, display: "flex", alignItems: "center", justifyContent: "center", color: assignedEmp.color, fontWeight: 900, fontSize: 13 }}>{assignedEmp.avatar}</div>
-                  <p style={{ color: assignedEmp.color, fontSize: 12, fontWeight: 700, letterSpacing: "0.04em" }}>{assignedEmp.name.toUpperCase()} IS WORKING ON YOUR GOAL</p>
-                  <div style={{ marginLeft: "auto", width: 14, height: 14, border: `2px solid ${assignedEmp.color}`, borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
+          {/* Team */}
+          <div style={{ padding:'10px 7px', flex:1, overflowY:'auto' }}>
+            <div style={{ fontSize:8,color:'#1A1A1A',fontWeight:700,letterSpacing:'0.12em',padding:'0 7px',marginBottom:7 }}>YOUR TEAM</div>
+            {Object.values(OPERATORS).map(o => (
+              <button key={o.id} className="opBtn" onClick={() => setActiveOp(o.id)} style={{
+                width:'100%',display:'flex',alignItems:'center',gap:8,padding:'7px 9px',borderRadius:9,border:'none',
+                background: activeOp===o.id ? o.bg : 'transparent',cursor:'pointer',transition:'all 0.2s',marginBottom:2,outline:'none',
+              }}>
+                <div style={{ width:26,height:26,borderRadius:7,background: activeOp===o.id ? o.bg : '#0D0D0D',border:`1px solid ${activeOp===o.id ? o.border : '#111'}`,display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'var(--syne)',fontWeight:900,fontSize:11,color: activeOp===o.id ? o.color : '#2A2A2A',flexShrink:0,transition:'all 0.2s' }}>
+                  {o.name[0]}
                 </div>
-                {assignedEmp.steps.map((step: string, i: number) => (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, opacity: i > thinkingStep ? 0.1 : i < thinkingStep ? 0.35 : 1, transition: "all 0.4s" }}>
-                    <span style={{ color: i < thinkingStep ? "#4ade80" : i === thinkingStep ? assignedEmp.color : "#222", fontSize: 12, width: 16, flexShrink: 0, fontWeight: 900 }}>
-                      {i < thinkingStep ? "✓" : i === thinkingStep ? "▶" : "○"}
-                    </span>
-                    <span style={{ color: i === thinkingStep ? "#fff" : i < thinkingStep ? "#444" : "#1A1A1A", fontSize: 13, fontWeight: i === thinkingStep ? 600 : 400 }}>
-                      {assignedEmp.name} is {step}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* Output / Deliverable */}
-            {(output || taskError) && !running && (
-              <div style={{ margin: "0 36px 24px", background: "#0A0A0A", border: `1px solid ${taskError ? "#3A1A1A" : "#1A1A1A"}`, borderRadius: 16, padding: 24, animation: "fadeIn 0.4s ease" }}>
-                {taskError ? (
-                  <div>
-                    <p style={{ color: "#f87171", fontSize: 13, fontWeight: 700, marginBottom: 6 }}>Something went wrong</p>
-                    <p style={{ color: "#f87171", fontSize: 13, opacity: 0.7 }}>{taskError}</p>
-                  </div>
-                ) : (
-                  <div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18, paddingBottom: 16, borderBottom: "1px solid #111" }}>
-                      <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#4ade80" }} />
-                      <p style={{ color: "#4ade80", fontSize: 12, fontWeight: 700, letterSpacing: "0.06em" }}>DELIVERABLE READY</p>
-                      <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-                        <button onClick={copyOutput} style={{ background: "#111", border: "1px solid #1A1A1A", borderRadius: 7, padding: "5px 12px", color: copied ? "#4ade80" : "#555", fontSize: 11, cursor: "pointer", fontFamily: "inherit", fontWeight: 600, transition: "color 0.2s" }}>
-                          {copied ? "Copied ✓" : "Copy"}
-                        </button>
-                        <button onClick={() => { setOutput(""); setGoal(""); setAssignedEmp(null); }} style={{ background: "#111", border: "1px solid #1A1A1A", borderRadius: 7, padding: "5px 12px", color: "#555", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}>
-                          New goal
-                        </button>
-                      </div>
-                    </div>
-                    <div style={{ color: "#CCC", fontSize: 13, lineHeight: 1.9, whiteSpace: "pre-wrap", fontFamily: "monospace" }}>
-                      {output}
-                    </div>
-                    {/* Suggest next actions */}
-                    <div style={{ marginTop: 20, paddingTop: 16, borderTop: "1px solid #111" }}>
-                      <p style={{ color: "#333", fontSize: 12, marginBottom: 10 }}>What should we do next?</p>
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
-                        {["Improve this", "Share with team", "Assign follow-up to Scout", "Have Rex find leads for this"].map((s, i) => (
-                          <button key={i} onClick={() => { setGoal(s); setOutput(""); }} style={{ background: "#111", border: "1px solid #1A1A1A", borderRadius: 20, padding: "6px 14px", color: "#555", fontSize: 12, cursor: "pointer", fontFamily: "inherit", transition: "all 0.15s" }}>
-                            {s}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
+                <div style={{ textAlign:'left', overflow:'hidden', flex:1 }}>
+                  <div style={{ fontFamily:'var(--syne)',fontSize:11,fontWeight:800,color: activeOp===o.id ? o.color : '#383838',letterSpacing:'-0.01em' }}>{o.name}</div>
+                  <div style={{ fontSize:8,color:'#1E1E1E',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis' }}>{o.role}</div>
+                </div>
+                {activeOp===o.id && (taskState==='thinking'||taskState==='working') && (
+                  <div style={{ width:5,height:5,borderRadius:'50%',background:o.color,boxShadow:`0 0 7px ${o.color}`,animation:'blink 0.8s infinite',flexShrink:0 }} />
                 )}
-              </div>
-            )}
+              </button>
+            ))}
+          </div>
 
-            {/* Suggested goals */}
-            {!running && !output && (
-              <div style={{ padding: "0 36px 36px" }}>
-                <p style={{ color: "#222", fontSize: 11, fontWeight: 700, letterSpacing: "0.1em", marginBottom: 14 }}>YOUR TEAM SUGGESTS</p>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(240px,1fr))", gap: 10 }}>
-                  {SUGGESTED_GOALS.map((s, i) => (
-                    <div key={i} onClick={() => setGoal(s.text)} className="sg" style={{ background: "#0A0A0A", borderRadius: 12, padding: "14px 16px", cursor: "pointer" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                        <span style={{ fontSize: 18 }}>{s.icon}</span>
-                        <div>
-                          <p style={{ color: "#888", fontSize: 13, lineHeight: 1.4, marginBottom: 3 }}>{s.text}</p>
-                          <p style={{ color: "#333", fontSize: 11 }}>{s.employee} will handle this</p>
+          {/* Bottom */}
+          <div style={{ padding:'10px 7px', borderTop:'1px solid #0C0C0C' }}>
+            {[{icon:'⚙', label:'Settings', action:()=>setShowSettings(true)},{icon:'↗', label:'Sign out', action:async()=>{ await supabase.auth.signOut(); router.push('/') }}].map(btn => (
+              <button key={btn.label} className="opBtn" onClick={btn.action} style={{ width:'100%',display:'flex',alignItems:'center',gap:8,padding:'7px 9px',borderRadius:9,border:'none',background:'transparent',cursor:'pointer',color:'#1E1E1E',fontSize:11,fontFamily:'var(--syne)',fontWeight:700,transition:'all 0.2s',outline:'none',marginBottom:2 }}>
+                <div style={{ width:26,height:26,borderRadius:7,background:'#0D0D0D',border:'1px solid #111',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12 }}>{btn.icon}</div>
+                {btn.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* ── Chat ── */}
+        <div style={{ flex:1, display:'flex', flexDirection:'column', background:'#000', overflow:'hidden', borderRight:'1px solid #0C0C0C' }}>
+          {/* Header */}
+          <div style={{ padding:'14px 22px', borderBottom:'1px solid #0C0C0C', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+            <div>
+              <div style={{ fontFamily:'var(--syne)',fontSize:13,fontWeight:800,letterSpacing:'-0.02em' }}>{companyName || 'Your workspace'}</div>
+              <div style={{ fontSize:9,color:'#1E1E1E',marginTop:1 }}>{taskCount} tasks completed · {!apiKey ? '⚠ Add API key in Settings' : `${provider} connected`}</div>
+            </div>
+            <div style={{ display:'flex',alignItems:'center',gap:5,background:'#050505',border:'1px solid #0D0D0D',borderRadius:7,padding:'4px 10px',fontSize:9,color:'#282828' }}>
+              <div style={{ width:4,height:4,borderRadius:'50%',background:!apiKey?'#222':'#10B981',boxShadow:apiKey?'0 0 5px #10B981':'none',animation:apiKey?'blink 2s infinite':'none' }} />
+              {!apiKey ? 'Not connected' : 'Team ready'}
+            </div>
+          </div>
+
+          {/* Messages */}
+          <div style={{ flex:1,overflowY:'auto',padding:'22px',display:'flex',flexDirection:'column',gap:22 }}>
+            {messages.length === 0 ? (
+              <div style={{ flex:1,display:'flex',flexDirection:'column',justifyContent:'center',alignItems:'center',gap:28,paddingTop:30 }}>
+                <div style={{ textAlign:'center' }}>
+                  <div style={{ fontFamily:'var(--syne)',fontSize:26,fontWeight:900,letterSpacing:'-0.04em',marginBottom:8,background:`linear-gradient(135deg,#6366F1,#06B6D4,#EC4899)`,WebkitBackgroundClip:'text',WebkitTextFillColor:'transparent',backgroundClip:'text' }}>
+                    What should your<br/>team work on?
+                  </div>
+                  <div style={{ fontSize:11,color:'#1E1E1E' }}>Type any goal. Your team figures out the rest.</div>
+                </div>
+                <div style={{ display:'grid',gridTemplateColumns:'1fr 1fr',gap:7,maxWidth:520,width:'100%' }}>
+                  {SUGGESTIONS.map((s, i) => {
+                    const sOp = OPERATORS[s.op]
+                    return (
+                      <button key={i} className="suggestion" onClick={() => setInput(s.text)} style={{ background:'#040404',border:'1px solid #0C0C0C',borderRadius:10,padding:'11px 13px',textAlign:'left',cursor:'pointer',transition:'all 0.2s',animation:`fadeUp 0.4s ${i*0.06}s ease both`,opacity:0,outline:'none' }}>
+                        <div style={{ display:'flex',alignItems:'center',gap:5,marginBottom:5 }}>
+                          <div style={{ width:15,height:15,borderRadius:4,background:sOp.bg,border:`1px solid ${sOp.border}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:7,fontWeight:900,fontFamily:'var(--syne)',color:sOp.color }}>{sOp.name[0]}</div>
+                          <span style={{ fontSize:8,color:sOp.color,fontWeight:700,letterSpacing:'0.06em' }}>{sOp.name.toUpperCase()}</span>
+                        </div>
+                        <div style={{ fontSize:10,color:'#333',lineHeight:1.5 }}>{s.text}</div>
+                      </button>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : (
+              messages.map(msg => {
+                const mOp = msg.operator ? OPERATORS[msg.operator] : null
+                return (
+                  <div key={msg.id} style={{ animation:'fadeUp 0.3s ease both' }}>
+                    {msg.role === 'user' ? (
+                      <div style={{ display:'flex',justifyContent:'flex-end' }}>
+                        <div style={{ background:'#0A0A0A',border:'1px solid #141414',borderRadius:'13px 13px 3px 13px',padding:'9px 15px',maxWidth:'72%',fontSize:12,color:'#666',lineHeight:1.7 }}>
+                          {msg.content}
                         </div>
                       </div>
+                    ) : (
+                      <div style={{ display:'flex',flexDirection:'column',gap:7,maxWidth:'88%' }}>
+                        {mOp && (
+                          <div style={{ display:'flex',alignItems:'center',gap:5 }}>
+                            <div style={{ width:16,height:16,borderRadius:4,background:mOp.bg,border:`1px solid ${mOp.border}`,display:'flex',alignItems:'center',justifyContent:'center',fontFamily:'var(--syne)',fontWeight:900,fontSize:8,color:mOp.color }}>{mOp.name[0]}</div>
+                            <span style={{ fontSize:9,color:mOp.color,fontWeight:700,letterSpacing:'0.08em' }}>{mOp.name.toUpperCase()} · {new Date(msg.timestamp).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>
+                          </div>
+                        )}
+                        <div style={{ background:'#040404',border:`1px solid ${mOp?.border||'#0C0C0C'}`,borderRadius:'3px 13px 13px 13px',padding:'15px 18px',fontSize:11,color:'#555',lineHeight:1.9,whiteSpace:'pre-wrap',position:'relative' }}>
+                          {msg.content}
+                          <button className="copyBtn" onClick={() => navigator.clipboard.writeText(msg.content)} style={{ position:'absolute',top:9,right:9,background:'#0D0D0D',border:'1px solid #141414',borderRadius:5,padding:'2px 7px',fontSize:8,color:'#2A2A2A',cursor:'pointer',opacity:0.5,transition:'opacity 0.2s',fontFamily:'var(--syne)',fontWeight:700 }}>
+                            COPY
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )
+              })
+            )}
+            <div ref={bottomRef} />
+          </div>
+
+          {/* Input */}
+          <div style={{ padding:'14px 22px', borderTop:'1px solid #0C0C0C' }}>
+            {input.trim() && (
+              <div style={{ display:'flex',alignItems:'center',gap:5,marginBottom:7,fontSize:9,color:op.color,animation:'fadeUp 0.2s ease' }}>
+                <div style={{ width:4,height:4,borderRadius:'50%',background:op.color,boxShadow:`0 0 5px ${op.color}`,animation:'blink 1s infinite' }} />
+                {op.name} will handle this
+              </div>
+            )}
+            <div style={{ display:'flex',gap:9,background:'#040404',border:`1px solid ${input.trim() ? op.border : '#0C0C0C'}`,borderRadius:13,padding:'11px 14px',transition:'border-color 0.3s' }}>
+              <textarea
+                ref={inputRef} value={input}
+                onChange={e => setInput(e.target.value)}
+                onKeyDown={handleKey}
+                placeholder="What should your team work on? (Enter to run)"
+                disabled={taskState==='thinking'||taskState==='working'}
+                rows={1}
+                style={{ flex:1,background:'transparent',border:'none',outline:'none',color:'#777',fontSize:12,fontFamily:'var(--mono)',resize:'none',lineHeight:1.7,maxHeight:90,opacity:(taskState==='thinking'||taskState==='working')?0.4:1 }}
+              />
+              <button className="sendBtn" onClick={runTask} disabled={!input.trim()||taskState==='thinking'||taskState==='working'} style={{ background:input.trim()?op.color:'#0D0D0D',border:'none',borderRadius:8,width:34,height:34,display:'flex',alignItems:'center',justifyContent:'center',cursor:input.trim()?'pointer':'default',flexShrink:0,transition:'all 0.2s',alignSelf:'flex-end',fontSize:14,opacity:input.trim()?1:0.2 }}>
+                {taskState==='thinking'||taskState==='working' ? '⏳' : '→'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Right Panel: Robot ── */}
+        <div style={{ width:300, background:'#020202', display:'flex', flexDirection:'column', overflow:'hidden', flexShrink:0 }}>
+          {/* Op header */}
+          <div style={{ padding:'18px 18px 14px', borderBottom:'1px solid #0C0C0C' }}>
+            <div style={{ display:'flex',alignItems:'center',gap:6,marginBottom:2 }}>
+              <div style={{ width:5,height:5,borderRadius:'50%',background:OPERATORS[activeOp].color,boxShadow:`0 0 7px ${OPERATORS[activeOp].color}`,animation:'blink 2s infinite' }} />
+              <span style={{ fontSize:8,color:'#1E1E1E',fontWeight:700,letterSpacing:'0.12em' }}>ACTIVE OPERATOR</span>
+            </div>
+            <div style={{ fontFamily:'var(--syne)',fontSize:17,fontWeight:900,letterSpacing:'-0.03em',marginBottom:1 }}>{OPERATORS[activeOp].name}</div>
+            <div style={{ fontSize:9,color:OPERATORS[activeOp].color,fontWeight:700,letterSpacing:'0.05em' }}>{OPERATORS[activeOp].role.toUpperCase()}</div>
+          </div>
+
+          {/* Robot stage */}
+          <div style={{
+            padding:'28px 18px 22px', display:'flex', flexDirection:'column', alignItems:'center', gap:18,
+            borderBottom:'1px solid #0C0C0C',
+            background:`radial-gradient(ellipse at center top, ${OPERATORS[activeOp].bg} 0%, transparent 65%)`,
+            transition:'background 0.6s',
+          }}>
+            <RobotDroid op={OPERATORS[activeOp]} state={taskState} />
+            <div style={{ display:'flex',alignItems:'center',gap:6,background:'#050505',border:'1px solid #0C0C0C',borderRadius:100,padding:'4px 11px',fontSize:9,fontWeight:700,color: taskState==='done'?'#10B981':taskState==='error'?'#EF4444':taskState==='idle'?'#222':OPERATORS[activeOp].color,transition:'color 0.3s' }}>
+              <div style={{ width:4,height:4,borderRadius:'50%',background: taskState==='done'?'#10B981':taskState==='error'?'#EF4444':taskState==='idle'?'#161616':OPERATORS[activeOp].color,animation:(taskState==='thinking'||taskState==='working')?'blink 0.8s infinite':'none',transition:'background 0.3s' }} />
+              {taskState==='idle' && 'Standing by'}{taskState==='thinking' && 'Initialising...'}{taskState==='working' && 'Working...'}{taskState==='done' && 'Complete ✓'}{taskState==='error' && 'Error'}
+            </div>
+          </div>
+
+          {/* Steps / capabilities */}
+          <div style={{ flex:1,padding:'18px',overflowY:'auto' }}>
+            {steps.length > 0 ? (
+              <div>
+                <div style={{ fontSize:8,color:'#1A1A1A',fontWeight:700,letterSpacing:'0.1em',marginBottom:11 }}>PROCESS LOG</div>
+                <div style={{ display:'flex',flexDirection:'column',gap:8 }}>
+                  {steps.map((s,i) => (
+                    <div key={i} style={{ display:'flex',alignItems:'center',gap:9,animation:`stepIn 0.4s ${i*0.12}s ease both`,opacity:0 }}>
+                      <div style={{ width:18,height:18,borderRadius:5,background:OPERATORS[activeOp].bg,border:`1px solid ${OPERATORS[activeOp].border}`,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
+                        <div style={{ width:5,height:5,borderRadius:'50%',background:OPERATORS[activeOp].color }} />
+                      </div>
+                      <span style={{ fontSize:11,color:'#444' }}>{s}</span>
                     </div>
                   ))}
                 </div>
+                {(taskState==='thinking'||taskState==='working') && (
+                  <div style={{ display:'flex',gap:4,marginTop:12,paddingLeft:4 }}>
+                    {[0,1,2].map(i => <div key={i} style={{ width:4,height:4,borderRadius:'50%',background:OPERATORS[activeOp].color,animation:`blink 0.8s ${i*0.22}s infinite` }} />)}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize:8,color:'#1A1A1A',fontWeight:700,letterSpacing:'0.1em',marginBottom:11 }}>WHAT I CAN DO</div>
+                <div style={{ display:'flex',flexDirection:'column',gap:5 }}>
+                  {OPERATORS[activeOp].keywords.slice(0,8).map((kw,i) => (
+                    <div key={i} style={{ display:'flex',alignItems:'center',gap:7,animation:`stepIn 0.3s ${i*0.04}s ease both`,opacity:0 }}>
+                      <div style={{ width:3,height:3,borderRadius:'50%',background:OPERATORS[activeOp].border,flexShrink:0 }} />
+                      <span style={{ fontSize:10,color:'#222',textTransform:'capitalize' }}>{kw}</span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ marginTop:18,background:OPERATORS[activeOp].bg,border:`1px solid ${OPERATORS[activeOp].border}`,borderRadius:9,padding:'11px 13px',fontSize:10,color:'#383838',lineHeight:1.7,fontStyle:'italic' }}>
+                  "{OPERATORS[activeOp].greeting}"
+                </div>
               </div>
             )}
           </div>
-        )}
-
-        {/* TASKS TAB */}
-        {activeTab === "tasks" && (
-          <div style={{ padding: "32px 36px" }}>
-            <h1 style={{ fontSize: 22, fontWeight: 900, letterSpacing: "-0.04em", marginBottom: 4 }}>Tasks</h1>
-            <p style={{ color: "#444", fontSize: 13, marginBottom: 24 }}>{tasks.length} tasks total · {completedTasks} completed</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {tasks.length === 0 ? (
-                <div style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 14, padding: "48px 32px", textAlign: "center" }}>
-                  <p style={{ color: "#333", fontSize: 14, marginBottom: 16 }}>No tasks yet</p>
-                  <button onClick={() => setActiveTab("home")} style={{ background: "#fff", border: "none", borderRadius: 8, padding: "10px 20px", color: "#000", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>Give your team a goal →</button>
-                </div>
-              ) : tasks.map((task, i) => (
-                <div key={i} style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 12, padding: "16px 18px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <p style={{ fontWeight: 700, fontSize: 14 }}>{task.title}</p>
-                    <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: task.status === "completed" ? "#052e16" : task.status === "failed" ? "#1A0505" : "#1A1A1A", color: task.status === "completed" ? "#4ade80" : task.status === "failed" ? "#f87171" : "#555" }}>
-                      {task.status.toUpperCase()}
-                    </span>
-                  </div>
-                  <p style={{ color: "#444", fontSize: 12, marginBottom: task.output ? 12 : 0 }}>{task.prompt}</p>
-                  {task.output && (
-                    <div style={{ background: "#111", border: "1px solid #1A1A1A", borderRadius: 9, padding: 12, color: "#666", fontSize: 12, lineHeight: 1.7, whiteSpace: "pre-wrap", fontFamily: "monospace", maxHeight: 160, overflow: "auto" }}>
-                      {task.output.slice(0, 400)}{task.output.length > 400 ? "\n\n..." : ""}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* TEAM TAB */}
-        {activeTab === "team" && (
-          <div style={{ padding: "32px 36px" }}>
-            <h1 style={{ fontSize: 22, fontWeight: 900, letterSpacing: "-0.04em", marginBottom: 4 }}>Your Team</h1>
-            <p style={{ color: "#444", fontSize: 13, marginBottom: 24 }}>4 AI employees ready to work</p>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(220px,1fr))", gap: 14 }}>
-              {EMPLOYEES.map((emp, i) => (
-                <div key={i} style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 16, padding: 22, position: "relative", overflow: "hidden" }}>
-                  <div style={{ position: "absolute", top: -24, right: -24, width: 100, height: 100, background: `radial-gradient(circle,${emp.color}06 0%,transparent 70%)`, pointerEvents: "none" }} />
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
-                    <div style={{ width: 44, height: 44, borderRadius: 13, background: emp.bg, border: `1px solid ${emp.color}25`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 900, color: emp.color }}>
-                      {emp.avatar}
-                    </div>
-                    <span style={{ fontSize: 10, fontWeight: 700, padding: "3px 10px", borderRadius: 20, background: empStatus[emp.name] === "running" ? emp.bg : "#111", color: empStatus[emp.name] === "running" ? emp.color : "#333", animation: empStatus[emp.name] === "running" ? "pulse 1.5s infinite" : "none" }}>
-                      ● {empStatus[emp.name] === "running" ? "WORKING" : "IDLE"}
-                    </span>
-                  </div>
-                  <h3 style={{ fontWeight: 800, fontSize: 16, marginBottom: 3, letterSpacing: "-0.02em" }}>{emp.name}</h3>
-                  <p style={{ color: emp.color, fontSize: 10, fontWeight: 700, marginBottom: 10, letterSpacing: "0.08em" }}>{emp.role.toUpperCase()}</p>
-                  <p style={{ color: "#444", fontSize: 13, lineHeight: 1.6, marginBottom: 16 }}>{emp.description}</p>
-                  <button onClick={() => { setGoal(`${emp.name}, `); setActiveTab("home"); }} style={{ width: "100%", padding: "10px", background: emp.color, border: "none", borderRadius: 9, color: "#000", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}>
-                    Give {emp.name} a goal →
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* ACTIVITY TAB */}
-        {activeTab === "activity" && (
-          <div style={{ padding: "32px 36px" }}>
-            <h1 style={{ fontSize: 22, fontWeight: 900, letterSpacing: "-0.04em", marginBottom: 4 }}>Activity</h1>
-            <p style={{ color: "#444", fontSize: 13, marginBottom: 24 }}>Everything your team has done</p>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {activity.length === 0 ? (
-                <div style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 14, padding: "48px 32px", textAlign: "center" }}>
-                  <p style={{ color: "#333", fontSize: 14 }}>No activity yet. Give your team a goal to get started.</p>
-                </div>
-              ) : activity.map((item, i) => (
-                <div key={i} style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 10, padding: "13px 16px", display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{ width: 6, height: 6, borderRadius: "50%", background: item.status === "completed" ? "#4ade80" : item.status === "failed" ? "#f87171" : "#555", flexShrink: 0 }} />
-                  <p style={{ color: "#888", fontSize: 13, flex: 1 }}>{item.message}</p>
-                  <p style={{ color: "#222", fontSize: 11, flexShrink: 0 }}>{new Date(item.time).toLocaleTimeString()}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* API KEYS TAB */}
-        {activeTab === "keys" && (
-          <div style={{ padding: "32px 36px" }}>
-            <h1 style={{ fontSize: 22, fontWeight: 900, letterSpacing: "-0.04em", marginBottom: 4 }}>API Keys</h1>
-            <p style={{ color: "#444", fontSize: 13, marginBottom: 24 }}>Your team uses these keys to think and work</p>
-            <div style={{ background: "#0A0A0A", border: "1px solid #1A1A1A", borderRadius: 14, padding: 22, marginBottom: 14, maxWidth: 560 }}>
-              {Object.keys(apiKeys).length === 0 ? (
-                <div style={{ textAlign: "center", padding: "24px 0" }}>
-                  <p style={{ color: "#333", fontSize: 14, marginBottom: 16 }}>No keys connected yet</p>
-                  <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" style={{ color: "#06B6D4", fontSize: 13, fontWeight: 600, display: "block", marginBottom: 16, textDecoration: "none" }}>→ Get a free Gemini key here</a>
-                </div>
-              ) : Object.entries(apiKeys).map(([provider, key]: any) => (
-                <div key={provider} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 14px", background: "#111", border: "1px solid #1A1A1A", borderRadius: 10, marginBottom: 8 }}>
-                  <div>
-                    <p style={{ color: "#fff", fontSize: 13, fontWeight: 700, textTransform: "capitalize" as const }}>{provider}</p>
-                    <p style={{ color: "#333", fontSize: 11, fontFamily: "monospace", marginTop: 2 }}>{key.slice(0, 10)}••••••••</p>
-                  </div>
-                  <span style={{ color: "#4ade80", fontSize: 10, fontWeight: 700, background: "#052e16", borderRadius: 20, padding: "3px 10px" }}>● ACTIVE</span>
-                </div>
-              ))}
-            </div>
-            <button onClick={() => setShowKeyModal(true)} style={{ background: "#fff", border: "none", borderRadius: 10, padding: "12px 22px", color: "#000", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}>
-              + Add API Key
-            </button>
-          </div>
-        )}
-
+        </div>
       </div>
-    </div>
-  );
+
+      {/* ── Settings Modal ── */}
+      {showSettings && (
+        <div onClick={() => setShowSettings(false)} style={{ position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',backdropFilter:'blur(10px)',zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center' }}>
+          <div onClick={e => e.stopPropagation()} style={{ background:'#040404',border:'1px solid #111',borderRadius:18,padding:'28px',width:460,maxWidth:'90vw',animation:'modalIn 0.25s ease' }}>
+            <div style={{ fontFamily:'var(--syne)',fontSize:18,fontWeight:900,letterSpacing:'-0.03em',marginBottom:4 }}>Settings</div>
+            <div style={{ fontSize:11,color:'#2A2A2A',marginBottom:24 }}>Connect your API key and set company context</div>
+
+            {[
+              { label:'COMPANY NAME', value:companyName, onChange:(v:string)=>setCompanyName(v), placeholder:'What are you building?', type:'text' },
+            ].map(f => (
+              <div key={f.label} style={{ marginBottom:16 }}>
+                <label style={{ display:'block',fontSize:8,color:'#333',fontWeight:700,letterSpacing:'0.1em',marginBottom:7 }}>{f.label}</label>
+                <input className="si" value={f.value} onChange={e=>f.onChange(e.target.value)} placeholder={f.placeholder} type={f.type} style={{ width:'100%',background:'#0A0A0A',border:'1px solid #111',borderRadius:9,padding:'10px 13px',color:'#777',fontSize:12,fontFamily:'var(--mono)',transition:'border-color 0.2s' }} />
+              </div>
+            ))}
+
+            <div style={{ marginBottom:16 }}>
+              <label style={{ display:'block',fontSize:8,color:'#333',fontWeight:700,letterSpacing:'0.1em',marginBottom:7 }}>LLM PROVIDER</label>
+              <select className="si" value={provider} onChange={e=>setProvider(e.target.value)} style={{ width:'100%',background:'#0A0A0A',border:'1px solid #111',borderRadius:9,padding:'10px 13px',color:'#777',fontSize:12,fontFamily:'var(--mono)',cursor:'pointer',transition:'border-color 0.2s' }}>
+                <option value="gemini">Gemini — recommended (free tier available)</option>
+                <option value="openai">OpenAI (GPT-4o)</option>
+                <option value="anthropic">Anthropic (Claude)</option>
+                <option value="groq">Groq (fastest)</option>
+                <option value="grok">Grok (xAI)</option>
+                <option value="mistral">Mistral</option>
+                <option value="deepseek">DeepSeek</option>
+              </select>
+            </div>
+
+            <div style={{ marginBottom:24 }}>
+              <label style={{ display:'block',fontSize:8,color:'#333',fontWeight:700,letterSpacing:'0.1em',marginBottom:7 }}>API KEY</label>
+              <input className="si" type="password" value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder={`Your ${provider} API key`} style={{ width:'100%',background:'#0A0A0A',border:'1px solid #111',borderRadius:9,padding:'10px 13px',color:'#777',fontSize:12,fontFamily:'var(--mono)',transition:'border-color 0.2s' }} />
+              <div style={{ fontSize:9,color:'#1A1A1A',marginTop:5 }}>Stored securely. BYOK = zero cost for you.</div>
+            </div>
+
+            <div style={{ display:'flex',gap:9 }}>
+              <button onClick={saveSettings} style={{ flex:1,background:'#fff',color:'#000',border:'none',borderRadius:9,padding:'11px',fontFamily:'var(--syne)',fontWeight:900,fontSize:12,cursor:'pointer' }}>Save</button>
+              <button onClick={() => setShowSettings(false)} style={{ background:'#0A0A0A',color:'#333',border:'1px solid #111',borderRadius:9,padding:'11px 18px',fontFamily:'var(--syne)',fontWeight:700,fontSize:12,cursor:'pointer' }}>Cancel</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
 }

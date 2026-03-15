@@ -68,9 +68,27 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ output: data.candidates[0].content.parts[0].text });
     }
 
-    // Grok (xAI) — same format as OpenAI
-    if (provider === "grok") {
-      const response = await fetch("https://api.x.ai/v1/chat/completions", {
+ 
+    // Groq (groq.com) - OpenAI compatible
+if (provider === "groq") {
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: model || "llama-3.3-70b-versatile",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: prompt }
+      ],
+    }),
+  });
+  const data = await response.json();
+  if (data.error) return NextResponse.json({ error: data.error.message }, { status: 400 });
+  return NextResponse.json({ output: data.choices[0].message.content });
+}      const response = await fetch("https://api.x.ai/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
