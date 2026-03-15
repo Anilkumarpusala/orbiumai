@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(req: NextRequest) {
-  const { prompt, systemPrompt, model, apiKey, provider } = await req.json();
+  const { prompt, task, systemPrompt, model, apiKey, provider } = await req.json();
+
+  const userMessage = prompt || task || "";
 
   if (!apiKey) {
     return NextResponse.json({ error: "No API key provided" }, { status: 400 });
@@ -21,13 +23,13 @@ export async function POST(req: NextRequest) {
           model: model || "gpt-4o",
           messages: [
             { role: "system", content: systemPrompt },
-            { role: "user", content: prompt }
+            { role: "user", content: userMessage }
           ],
         }),
       });
       const data = await response.json();
       if (data.error) return NextResponse.json({ error: data.error.message }, { status: 400 });
-      return NextResponse.json({ output: data.choices[0].message.content });
+      return NextResponse.json({ result: data.choices[0].message.content });
     }
 
     // Anthropic (Claude)
@@ -43,12 +45,12 @@ export async function POST(req: NextRequest) {
           model: model || "claude-3-5-sonnet-20241022",
           max_tokens: 4096,
           system: systemPrompt,
-          messages: [{ role: "user", content: prompt }],
+          messages: [{ role: "user", content: userMessage }],
         }),
       });
       const data = await response.json();
       if (data.error) return NextResponse.json({ error: data.error.message }, { status: 400 });
-      return NextResponse.json({ output: data.content[0].text });
+      return NextResponse.json({ result: data.content[0].text });
     }
 
     // Google Gemini
@@ -59,36 +61,39 @@ export async function POST(req: NextRequest) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            contents: [{ parts: [{ text: `${systemPrompt}\n\n${prompt}` }] }],
+            contents: [{ parts: [{ text: `${systemPrompt}\n\n${userMessage}` }] }],
           }),
         }
       );
       const data = await response.json();
       if (data.error) return NextResponse.json({ error: data.error.message }, { status: 400 });
-      return NextResponse.json({ output: data.candidates[0].content.parts[0].text });
+      return NextResponse.json({ result: data.candidates[0].content.parts[0].text });
     }
 
- 
-    // Groq (groq.com) - OpenAI compatible
-if (provider === "groq") {
-  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: model || "llama-3.3-70b-versatile",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: prompt }
-      ],
-    }),
-  });
-  const data = await response.json();
-  if (data.error) return NextResponse.json({ error: data.error.message }, { status: 400 });
-  return NextResponse.json({ output: data.choices[0].message.content });
-}      const response = await fetch("https://api.x.ai/v1/chat/completions", {
+    // Groq
+    if (provider === "groq") {
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: model || "llama-3.3-70b-versatile",
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userMessage }
+          ],
+        }),
+      });
+      const data = await response.json();
+      if (data.error) return NextResponse.json({ error: data.error.message }, { status: 400 });
+      return NextResponse.json({ result: data.choices[0].message.content });
+    }
+
+    // Grok (xAI)
+    if (provider === "grok") {
+      const response = await fetch("https://api.x.ai/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -98,13 +103,13 @@ if (provider === "groq") {
           model: model || "grok-2-latest",
           messages: [
             { role: "system", content: systemPrompt },
-            { role: "user", content: prompt }
+            { role: "user", content: userMessage }
           ],
         }),
       });
       const data = await response.json();
       if (data.error) return NextResponse.json({ error: data.error.message }, { status: 400 });
-      return NextResponse.json({ output: data.choices[0].message.content });
+      return NextResponse.json({ result: data.choices[0].message.content });
     }
 
     // Mistral
@@ -119,13 +124,13 @@ if (provider === "groq") {
           model: model || "mistral-large-latest",
           messages: [
             { role: "system", content: systemPrompt },
-            { role: "user", content: prompt }
+            { role: "user", content: userMessage }
           ],
         }),
       });
       const data = await response.json();
       if (data.error) return NextResponse.json({ error: data.error.message }, { status: 400 });
-      return NextResponse.json({ output: data.choices[0].message.content });
+      return NextResponse.json({ result: data.choices[0].message.content });
     }
 
     // DeepSeek
@@ -140,16 +145,16 @@ if (provider === "groq") {
           model: model || "deepseek-chat",
           messages: [
             { role: "system", content: systemPrompt },
-            { role: "user", content: prompt }
+            { role: "user", content: userMessage }
           ],
         }),
       });
       const data = await response.json();
       if (data.error) return NextResponse.json({ error: data.error.message }, { status: 400 });
-      return NextResponse.json({ output: data.choices[0].message.content });
+      return NextResponse.json({ result: data.choices[0].message.content });
     }
 
-    return NextResponse.json({ error: "Invalid provider. Supported: openai, anthropic, gemini, grok, mistral, deepseek" }, { status: 400 });
+    return NextResponse.json({ error: "Invalid provider" }, { status: 400 });
 
   } catch (err) {
     return NextResponse.json({ error: "Something went wrong. Check your API key and try again." }, { status: 500 });
